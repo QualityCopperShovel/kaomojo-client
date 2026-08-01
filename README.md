@@ -48,7 +48,7 @@ Setup starts fresh by default. Power users can scan conversations that existed b
 kaomojo import-history
 ```
 
-This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports checkpoint after every batch and stop after one hour; rerun the same command to resume. Stable IDs make retries safe, including for users who already completed part of an import.
+This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports process newest history first so results appear early, checkpoint after every batch, and stop after one hour; rerun the same command to resume. Stable IDs make retries safe, including for users who already completed part of an import.
 
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 

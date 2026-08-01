@@ -376,6 +376,7 @@ def import_history_locked(args):
     pending = list(all_observations(
         args.codex_sessions, args.claude_projects, processed_ids,
     ))
+    pending.sort(key=lambda item: item["observed_at"], reverse=True)
     total = len(processed_ids) + len(pending)
     save_import_state(args.import_state, state, "running", total)
     print(f"History import: {len(processed_ids)} already processed, {len(pending)} remaining")

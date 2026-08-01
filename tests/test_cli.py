@@ -270,13 +270,22 @@ class ClientTest(unittest.TestCase):
                     } for item in batch],
                 }
 
-            with patch("kaomojo_client.cli.post_batch", side_effect=accepted_batch) as post:
+            observed_order = []
+
+            def ordered_accepted_batch(session, key, batch, deadline_seconds=120):
+                observed_order.extend(item["observed_at"] for item in batch)
+                return accepted_batch(session, key, batch, deadline_seconds)
+
+            with patch("kaomojo_client.cli.post_batch", side_effect=ordered_accepted_batch) as post:
                 import_history(args)
                 import_history(args)
             saved = json.loads(args.import_state.read_text(encoding="utf-8"))
             self.assertEqual(saved["status"], "completed")
             self.assertEqual(len(saved["processed_ids"]), 2)
             self.assertEqual(post.call_count, 1)
+            self.assertEqual(observed_order, [
+                "2026-08-01T00:00:01Z", "2026-08-01T00:00:00Z",
+            ])
             self.assertEqual(stat.S_IMODE(args.import_state.stat().st_mode), 0o600)
 
     def test_history_import_deadline_is_terminal_and_resumable(self):
