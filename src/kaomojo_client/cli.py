@@ -67,7 +67,7 @@ def observations(session_dir, sent_ids, context=None):
                 continue
             item = {
                 "id": observation_id,
-                "message_start": text[:100],
+                "message_start": text[:50],
                 "source": "codex",
                 "observed_at": timestamp,
                 "conversation_hash": conversation_hash,

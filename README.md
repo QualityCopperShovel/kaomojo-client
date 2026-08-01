@@ -26,7 +26,7 @@ Start collecting:
 kaomojo collect
 ```
 
-Every `kaomojo collect` run submits only sightings created after setup. Run it periodically with your preferred scheduler. Codex sessions are read locally. Only the first 100 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. Run it periodically with your preferred scheduler. Codex sessions are read locally. Only the first 50 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 

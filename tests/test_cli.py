@@ -43,6 +43,24 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(result[0]["model"], "gpt-test")
             self.assertTrue(result[0]["conversation_hash"].startswith("sha256:"))
 
+    def test_observation_prefix_is_limited_to_50_characters(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory)
+            text = "(＾▽＾) " + "x" * 100
+            record = {
+                "type": "response_item",
+                "timestamp": "2026-08-01T00:00:00Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text}],
+                },
+            }
+            (sessions / "session.jsonl").write_text(json.dumps(record), encoding="utf-8")
+            result = list(observations(sessions, set()))
+            self.assertEqual(result[0]["message_start"], text[:50])
+            self.assertEqual(len(result[0]["message_start"]), 50)
+
     def test_invalid_key_is_rejected(self):
         with TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "does not look"):
