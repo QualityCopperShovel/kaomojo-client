@@ -20,7 +20,7 @@ kaomojo setup
 
 Paste the key at the hidden prompt. The client stores it privately, then marks existing conversations as already seen using local ID hashes. It does not store or upload their text.
 
-Setup also installs a native five-minute recurring collector. The default architecture is a user-level systemd timer on most Linux distributions and a LaunchAgent on macOS, so collection survives terminal exits without requiring a long-running Kaomojo process. Use `kaomojo schedule` to repair or refresh it. If that native scheduler is unavailable, setup stops with a concrete error; configure an equivalent five-minute scheduler first, then use `kaomojo setup --no-schedule` to declare that it is externally owned.
+Setup also schedules collection every five minutes in the background, using systemd on most Linux distributions and a LaunchAgent on macOS. It keeps working after the terminal closes without leaving Kaomojo running continuously. Use `kaomojo schedule` to repair or refresh it. If neither scheduler is available, setup stops with a clear error; configure an equivalent scheduler, then rerun setup with `--no-schedule`.
 
 Start collecting:
 
