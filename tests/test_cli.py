@@ -61,7 +61,7 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(result[0]["model"], "gpt-test")
             self.assertTrue(result[0]["conversation_hash"].startswith("sha256:"))
 
-    def test_observation_prefix_is_limited_to_50_characters(self):
+    def test_observation_prefix_is_limited_to_30_characters(self):
         with TemporaryDirectory() as directory:
             sessions = Path(directory)
             text = "(＾▽＾) " + "x" * 100
@@ -76,8 +76,8 @@ class ClientTest(unittest.TestCase):
             }
             (sessions / "session.jsonl").write_text(json.dumps(record), encoding="utf-8")
             result = list(observations(sessions, set()))
-            self.assertEqual(result[0]["message_start"], text[:50])
-            self.assertEqual(len(result[0]["message_start"]), 50)
+            self.assertEqual(result[0]["message_start"], text[:30])
+            self.assertEqual(len(result[0]["message_start"]), 30)
 
     def test_claude_observation_contains_prefix_source_model_and_hash(self):
         with TemporaryDirectory() as directory:
