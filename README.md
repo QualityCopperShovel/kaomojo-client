@@ -18,7 +18,7 @@ Create an API key at [kaomojo.com](https://kaomojo.com), then run:
 kaomojo setup
 ```
 
-Paste the key at the hidden prompt. The client stores it in the operating system's standard per-user configuration directory with user-only permissions and prints the exact location. It also automatically marks conversations already on disk as seen.
+Paste the key at the hidden prompt. The client stores it in the operating system's standard per-user configuration directory with user-only permissions and prints the exact location. It then scans existing conversations locally and stores only truncated SHA-256 message fingerprints in its private state file. Conversation text is not copied into that file, and the baseline scan sends nothing to Kaomojo; the fingerprints simply prevent old messages from being submitted as new sightings.
 
 Setup also installs a native five-minute recurring collector. The default architecture is a user systemd timer on Linux (including standard Ubuntu installations) and a LaunchAgent on macOS, so collection survives terminal exits without requiring a long-running Kaomojo process. Use `kaomojo schedule` to repair or refresh it. If that native scheduler is unavailable, setup stops with a concrete error; configure an equivalent five-minute scheduler first, then use `kaomojo setup --no-schedule` to declare that it is externally owned.
 
