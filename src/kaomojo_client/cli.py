@@ -66,7 +66,7 @@ def observations(session_dir, sent_ids, context=None):
             if observation_id in sent_ids:
                 continue
             item = {
-                "id": observation_id,
+                "idempotency_key": observation_id,
                 "message_start": text[:50],
                 "source": "codex",
                 "observed_at": timestamp,
@@ -162,7 +162,7 @@ def collect(args):
             result = post_batch(session, api_key, batch)
             accepted += result["accepted"]
             rejected += result["rejected"]
-            sent_ids.update(item["id"] for item in batch)
+            sent_ids.update(item["idempotency_key"] for item in batch)
             atomic_private_json(args.state, sorted(sent_ids))
     print(f"Complete: {accepted} accepted, {rejected} rejected, {len(pending)} processed")
 
@@ -177,7 +177,7 @@ def setup(args):
         print("Collection was already initialized; existing state was preserved")
         return
     existing = list(observations(args.sessions, set()))
-    atomic_private_json(args.state, sorted(item["id"] for item in existing))
+    atomic_private_json(args.state, sorted(item["idempotency_key"] for item in existing))
     print(f"Initialized collection: {len(existing)} existing observations marked as seen")
 
 

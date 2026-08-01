@@ -40,6 +40,8 @@ class ClientTest(unittest.TestCase):
             )
             result = list(observations(sessions, set()))
             self.assertEqual(result[0]["message_start"], "(＾▽＾) Finished.")
+            self.assertIn("idempotency_key", result[0])
+            self.assertNotIn("id", result[0])
             self.assertEqual(result[0]["model"], "gpt-test")
             self.assertTrue(result[0]["conversation_hash"].startswith("sha256:"))
 
