@@ -40,6 +40,16 @@ The forced no-cache install is necessary because `pipx upgrade` and `pipx reinst
 
 Every `kaomojo collect` run submits only sightings created after setup. Codex and Claude Code sessions are read locally. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
+## Import earlier sightings
+
+Setup starts fresh by default. Power users can scan conversations that existed before setup with:
+
+```bash
+kaomojo import-history
+```
+
+This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports checkpoint after every batch and stop after one hour; rerun the same command to resume. Stable IDs make retries safe, including for users who already completed part of an import.
+
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 
 ## Development

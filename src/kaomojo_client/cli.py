@@ -2,6 +2,9 @@
 
 from pathlib import Path
 import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import fcntl
 import getpass
 import hashlib
 import json
@@ -24,6 +27,7 @@ DEFAULT_CLAUDE_PROJECTS = Path(
 ) / "projects"
 COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
+DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
 
 
 def content_text(content, allowed_types=None):
@@ -222,15 +226,17 @@ def baseline_new_sources(args, sent_ids, initialized_sources):
     return added
 
 
-def post_batch(session, api_key, batch):
-    deadline = time.monotonic() + 120
+def post_batch(session, api_key, batch, deadline_seconds=120):
+    if deadline_seconds <= 0:
+        raise ValueError("Submission deadline must be positive")
+    deadline = time.monotonic() + deadline_seconds
     for attempt in range(4):
         try:
             response = session.post(
                 API_URL,
                 headers={"X-API-Key": api_key},
                 json={"observations": batch},
-                timeout=min(100, max(1, deadline - time.monotonic())),
+                timeout=min(100, max(0.1, deadline - time.monotonic())),
             )
         except requests.RequestException:
             if attempt == 3 or time.monotonic() >= deadline:
@@ -240,7 +246,20 @@ def post_batch(session, api_key, batch):
         if response.status_code not in {429, 503}:
             response.raise_for_status()
             payload = response.json()
-            if not isinstance(payload.get("accepted"), int) or not isinstance(payload.get("rejected"), int):
+            results = payload.get("results")
+            if (
+                not isinstance(payload.get("accepted"), int)
+                or not isinstance(payload.get("rejected"), int)
+                or payload["accepted"] + payload["rejected"] != len(batch)
+                or not isinstance(results, list)
+                or len(results) != len(batch)
+                or any(
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("idempotency_key"), str)
+                    or not isinstance(item.get("accepted"), bool)
+                    for item in results
+                )
+            ):
                 raise RuntimeError("Kaomojo returned a malformed success response")
             return payload
         if attempt == 3 or time.monotonic() >= deadline:
@@ -253,7 +272,28 @@ def post_batch(session, api_key, batch):
     raise RuntimeError("Kaomojo submission did not reach a terminal state")
 
 
+@contextmanager
+def client_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.chmod(0o700)
+    with path.open("a+", encoding="utf-8") as lock:
+        path.chmod(0o600)
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("Another Kaomojo collection operation is already running") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def collect(args):
+    with client_lock(args.lock):
+        collect_locked(args)
+
+
+def collect_locked(args):
     if args.context and len(args.context) > 200:
         raise ValueError("--context must be at most 200 characters")
     if not args.state.exists():
@@ -276,6 +316,106 @@ def collect(args):
             sent_ids.update(item["idempotency_key"] for item in batch)
             save_state(args.state, sent_ids, initialized_sources)
     print(f"Complete: {accepted} accepted, {rejected} rejected, {len(pending)} processed")
+
+
+def new_import_state():
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "version": 1,
+        "status": "pending",
+        "processed_ids": [],
+        "started_at": now,
+        "updated_at": now,
+        "total": None,
+        "error": None,
+    }
+
+
+def load_import_state(path):
+    if not path.exists():
+        return new_import_state()
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != 1
+        or value.get("status") not in {
+            "pending", "running", "timed_out", "failed", "cancelled", "completed",
+        }
+        or not isinstance(value.get("processed_ids"), list)
+        or not all(isinstance(item, str) for item in value["processed_ids"])
+    ):
+        raise ValueError(f"Invalid history import state file: {path}")
+    return value
+
+
+def save_import_state(path, state, status, total, error=None):
+    state.update({
+        "status": status,
+        "processed_ids": sorted(set(state["processed_ids"])),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "total": total,
+        "error": error,
+    })
+    atomic_private_json(path, state)
+
+
+def import_history(args):
+    with client_lock(args.lock):
+        import_history_locked(args)
+
+
+def import_history_locked(args):
+    if not args.state.exists():
+        raise RuntimeError("Run `kaomojo setup` before importing history")
+    if args.deadline < 120:
+        raise ValueError("--deadline must be at least 120 seconds")
+    deadline = time.monotonic() + args.deadline
+    api_key = load_key(args.credentials)
+    state = load_import_state(args.import_state)
+    processed_ids = set(state["processed_ids"])
+    pending = list(all_observations(
+        args.codex_sessions, args.claude_projects, processed_ids,
+    ))
+    total = len(processed_ids) + len(pending)
+    save_import_state(args.import_state, state, "running", total)
+    print(f"History import: {len(processed_ids)} already processed, {len(pending)} remaining")
+    accepted = rejected = 0
+    try:
+        with requests.Session() as session:
+            for start in range(0, len(pending), 100):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    save_import_state(
+                        args.import_state, state, "timed_out", total,
+                        "Overall history import deadline exceeded; rerun to resume",
+                    )
+                    raise RuntimeError(
+                        "History import deadline exceeded; rerun `kaomojo import-history` to resume"
+                    )
+                batch = pending[start : start + 100]
+                result = post_batch(
+                    session, api_key, batch, deadline_seconds=min(120, remaining),
+                )
+                accepted += result["accepted"]
+                rejected += result["rejected"]
+                state["processed_ids"].extend(item["idempotency_key"] for item in batch)
+                save_import_state(args.import_state, state, "running", total)
+                print(
+                    f"History import: {len(state['processed_ids'])}/{total} processed "
+                    f"({accepted} accepted, {rejected} rejected this run)"
+                )
+    except KeyboardInterrupt as error:
+        save_import_state(args.import_state, state, "cancelled", total, "Cancelled by user")
+        raise RuntimeError(
+            "History import cancelled; rerun `kaomojo import-history` to resume"
+        ) from error
+    except (requests.RequestException, RuntimeError) as error:
+        if state["status"] != "timed_out":
+            status = "timed_out" if time.monotonic() >= deadline else "failed"
+            save_import_state(args.import_state, state, status, total, str(error))
+        raise
+    save_import_state(args.import_state, state, "completed", total)
+    print(f"History import complete: {accepted} accepted, {rejected} rejected this run")
 
 
 def setup(args):
@@ -415,8 +555,27 @@ def parser():
     collect_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     collect_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     collect_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
+    collect_parser.add_argument("--lock", type=Path, default=DEFAULT_STATE / "client.lock")
     collect_parser.add_argument("--context", help="Optional de-identified context, at most 200 characters")
     collect_parser.set_defaults(handler=collect)
+    import_parser = commands.add_parser(
+        "import-history",
+        help="Import sightings from conversations that existed before setup",
+    )
+    import_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
+    import_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    import_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
+    import_parser.add_argument(
+        "--import-state", type=Path, default=DEFAULT_STATE / "history-import.json",
+    )
+    import_parser.add_argument("--lock", type=Path, default=DEFAULT_STATE / "client.lock")
+    import_parser.add_argument(
+        "--deadline",
+        type=int,
+        default=DEFAULT_IMPORT_DEADLINE_SECONDS,
+        help="Overall deadline in seconds (default: 3600); rerun to resume",
+    )
+    import_parser.set_defaults(handler=import_history)
     return root
 
 

@@ -13,6 +13,8 @@ from kaomojo_client.cli import (
     baseline_new_sources,
     configure_launchd_schedule,
     configure_systemd_schedule,
+    client_lock,
+    import_history,
     load_key,
     load_sent_ids,
     load_state,
@@ -214,6 +216,112 @@ class ClientTest(unittest.TestCase):
         with patch("kaomojo_client.cli.time.sleep", return_value=None):
             with self.assertRaisesRegex(requests.Timeout, "upstream timed out"):
                 post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "(._.)"}])
+
+    def test_malformed_submission_success_is_rejected(self):
+        response = SimpleNamespace(
+            status_code=202,
+            json=lambda: {"accepted": 1, "rejected": 0},
+            raise_for_status=lambda: None,
+        )
+        session = SimpleNamespace(post=lambda *args, **kwargs: response)
+        with self.assertRaisesRegex(RuntimeError, "malformed success"):
+            post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "(._.)"}])
+
+    def test_history_import_checkpoints_and_reruns_without_duplicates(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            records = [{
+                "type": "response_item",
+                "timestamp": f"2026-08-01T00:00:0{index}Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"(^_{index}^) Existing."}],
+                },
+            } for index in range(2)]
+            (sessions / "session.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records), encoding="utf-8",
+            )
+            credentials = root / "credentials.json"
+            save_key(credentials, "ar_abcdefghijklmnopqrstuvwxyz")
+            state = root / "state.json"
+            state.write_text(json.dumps({
+                "version": 2, "sent_ids": [], "initialized_sources": ["codex"],
+            }), encoding="utf-8")
+            args = SimpleNamespace(
+                codex_sessions=sessions,
+                claude_projects=root / "missing-claude",
+                state=state,
+                credentials=credentials,
+                import_state=root / "history-import.json",
+                lock=root / "client.lock",
+                deadline=120,
+            )
+
+            def accepted_batch(session, key, batch, deadline_seconds=120):
+                return {
+                    "accepted": len(batch),
+                    "rejected": 0,
+                    "results": [{
+                        "idempotency_key": item["idempotency_key"],
+                        "accepted": True,
+                    } for item in batch],
+                }
+
+            with patch("kaomojo_client.cli.post_batch", side_effect=accepted_batch) as post:
+                import_history(args)
+                import_history(args)
+            saved = json.loads(args.import_state.read_text(encoding="utf-8"))
+            self.assertEqual(saved["status"], "completed")
+            self.assertEqual(len(saved["processed_ids"]), 2)
+            self.assertEqual(post.call_count, 1)
+            self.assertEqual(stat.S_IMODE(args.import_state.stat().st_mode), 0o600)
+
+    def test_history_import_deadline_is_terminal_and_resumable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            (sessions / "session.jsonl").write_text(json.dumps({
+                "type": "response_item",
+                "timestamp": "2026-08-01T00:00:00Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "(._.) Existing."}],
+                },
+            }), encoding="utf-8")
+            credentials = root / "credentials.json"
+            save_key(credentials, "ar_abcdefghijklmnopqrstuvwxyz")
+            state = root / "state.json"
+            state.write_text(json.dumps({
+                "version": 2, "sent_ids": [], "initialized_sources": ["codex"],
+            }), encoding="utf-8")
+            args = SimpleNamespace(
+                codex_sessions=sessions,
+                claude_projects=root / "missing-claude",
+                state=state,
+                credentials=credentials,
+                import_state=root / "history-import.json",
+                lock=root / "client.lock",
+                deadline=120,
+            )
+            with patch("kaomojo_client.cli.time.monotonic", side_effect=[0, 121, 121]):
+                with self.assertRaisesRegex(RuntimeError, "rerun.*resume"):
+                    import_history(args)
+            saved = json.loads(args.import_state.read_text(encoding="utf-8"))
+            self.assertEqual(saved["status"], "timed_out")
+            self.assertEqual(saved["processed_ids"], [])
+
+    def test_client_lock_rejects_duplicate_operation(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "client.lock"
+            with client_lock(path):
+                with self.assertRaisesRegex(RuntimeError, "already running"):
+                    with client_lock(path):
+                        self.fail("duplicate lock unexpectedly acquired")
 
 
 if __name__ == "__main__":
