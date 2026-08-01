@@ -19,6 +19,7 @@ from kaomojo_client.cli import (
     load_sent_ids,
     load_state,
     observations,
+    observation_batches,
     post_batch,
     parser,
     save_key,
@@ -27,6 +28,25 @@ from kaomojo_client.cli import (
 
 
 class ClientTest(unittest.TestCase):
+    def test_observation_batches_honor_item_and_body_limits(self):
+        observations = [
+            {
+                "idempotency_key": f"item-{index}",
+                "message_start": "(^_^) finished the work",
+                "harness": "codex",
+                "context": "x" * 200,
+            }
+            for index in range(501)
+        ]
+        batches = list(observation_batches(observations))
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(sum(map(len, batches)), 501)
+        self.assertTrue(all(len(batch) <= 500 for batch in batches))
+        self.assertTrue(all(
+            len(json.dumps({"observations": batch}).encode("utf-8")) <= 60 * 1024
+            for batch in batches
+        ))
+
     def test_help_names_both_supported_agents(self):
         help_text = parser().format_help()
         self.assertIn("Codex and Claude Code sessions", " ".join(help_text.split()))

@@ -29,6 +29,8 @@ DEFAULT_CLAUDE_PROJECTS = Path(
 COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
 DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
+MAX_BATCH_ITEMS = 500
+TARGET_BATCH_BYTES = 60 * 1024
 
 
 def content_text(content, allowed_types=None):
@@ -290,6 +292,26 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
     raise RuntimeError("Kaomojo submission did not reach a terminal state")
 
 
+def observation_batches(observations):
+    """Pack API batches near the service limit without crossing its body cap."""
+    batch = []
+    body_size = len(json.dumps({"observations": []}).encode("utf-8"))
+    for observation in observations:
+        item_size = len(json.dumps(observation).encode("utf-8"))
+        candidate_size = body_size + item_size + (2 if batch else 0)
+        if batch and (len(batch) >= MAX_BATCH_ITEMS or candidate_size > TARGET_BATCH_BYTES):
+            yield batch
+            batch = [observation]
+            body_size = len(json.dumps({"observations": []}).encode("utf-8")) + item_size
+        else:
+            batch.append(observation)
+            body_size = candidate_size
+        if body_size > TARGET_BATCH_BYTES:
+            raise ValueError("One observation is too large for Kaomojo's request limit")
+    if batch:
+        yield batch
+
+
 @contextmanager
 def client_lock(path):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -326,8 +348,7 @@ def collect_locked(args):
     api_key = load_key(args.credentials)
     accepted = rejected = 0
     with requests.Session() as session:
-        for start in range(0, len(pending), 100):
-            batch = pending[start : start + 100]
+        for batch in observation_batches(pending):
             result = post_batch(session, api_key, batch)
             accepted += result["accepted"]
             rejected += result["rejected"]
@@ -401,7 +422,7 @@ def import_history_locked(args):
     accepted = rejected = 0
     try:
         with requests.Session() as session:
-            for start in range(0, len(pending), 100):
+            for batch in observation_batches(pending):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     save_import_state(
@@ -411,7 +432,6 @@ def import_history_locked(args):
                     raise RuntimeError(
                         "History import deadline exceeded; rerun `kaomojo import-history` to resume"
                     )
-                batch = pending[start : start + 100]
                 result = post_batch(
                     session, api_key, batch, deadline_seconds=min(120, remaining),
                 )
