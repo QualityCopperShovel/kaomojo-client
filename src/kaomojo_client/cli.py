@@ -297,7 +297,9 @@ def parser():
     setup_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     setup_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     setup_parser.set_defaults(handler=setup)
-    collect_parser = commands.add_parser("collect", help="Collect new sightings from Codex sessions")
+    collect_parser = commands.add_parser(
+        "collect", help="Collect new sightings from Codex and Claude Code sessions",
+    )
     collect_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     collect_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     collect_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")

@@ -16,12 +16,17 @@ from kaomojo_client.cli import (
     load_state,
     observations,
     post_batch,
+    parser,
     save_key,
     setup,
 )
 
 
 class ClientTest(unittest.TestCase):
+    def test_help_names_both_supported_agents(self):
+        help_text = parser().format_help()
+        self.assertIn("Codex and Claude Code sessions", " ".join(help_text.split()))
+
     def test_key_round_trip_uses_private_permissions(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config" / "credentials.json"
