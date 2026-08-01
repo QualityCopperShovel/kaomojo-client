@@ -15,6 +15,7 @@ import requests
 API_URL = "https://kaomojo.com/api/v1/kaomojis"
 DEFAULT_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kaomojo"
 DEFAULT_STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "kaomojo"
+DEFAULT_SESSIONS = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
 
 
 def content_text(content):
@@ -148,13 +149,10 @@ def collect(args):
         raise RuntimeError(f"Codex sessions directory not found: {args.sessions}")
     if args.context and len(args.context) > 200:
         raise ValueError("--context must be at most 200 characters")
+    if not args.state.exists():
+        raise RuntimeError("Run `kaomojo setup` first")
     sent_ids = load_sent_ids(args.state)
     pending = list(observations(args.sessions, sent_ids, args.context))
-    if args.initialize:
-        sent_ids.update(item["id"] for item in pending)
-        atomic_private_json(args.state, sorted(sent_ids))
-        print(f"Initialized: {len(pending)} existing observations marked as seen")
-        return
     api_key = load_key(args.credentials)
     accepted = rejected = 0
     with requests.Session() as session:
@@ -169,9 +167,17 @@ def collect(args):
 
 
 def setup(args):
+    if not args.sessions.is_dir():
+        raise RuntimeError(f"Codex sessions directory not found: {args.sessions}")
     key = sys.stdin.readline().strip() if args.key_stdin else getpass.getpass("Paste your Kaomojo API key: ").strip()
     save_key(args.credentials, key)
     print(f"Saved your API key securely in {args.credentials}")
+    if args.state.exists():
+        print("Collection was already initialized; existing state was preserved")
+        return
+    existing = list(observations(args.sessions, set()))
+    atomic_private_json(args.state, sorted(item["id"] for item in existing))
+    print(f"Initialized collection: {len(existing)} existing observations marked as seen")
 
 
 def parser():
@@ -180,12 +186,12 @@ def parser():
     commands = root.add_subparsers(dest="command", required=True)
     setup_parser = commands.add_parser("setup", help="Save your API key with user-only permissions")
     setup_parser.add_argument("--key-stdin", action="store_true", help=argparse.SUPPRESS)
+    setup_parser.add_argument("--sessions", type=Path, default=DEFAULT_SESSIONS)
+    setup_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     setup_parser.set_defaults(handler=setup)
     collect_parser = commands.add_parser("collect", help="Collect new sightings from Codex sessions")
-    default_codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-    collect_parser.add_argument("--sessions", type=Path, default=default_codex_home / "sessions")
+    collect_parser.add_argument("--sessions", type=Path, default=DEFAULT_SESSIONS)
     collect_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
-    collect_parser.add_argument("--initialize", action="store_true", help="Skip existing history")
     collect_parser.add_argument("--context", help="Optional de-identified context, at most 200 characters")
     collect_parser.set_defaults(handler=collect)
     return root

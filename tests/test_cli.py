@@ -1,12 +1,13 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import json
 import os
 import stat
 import unittest
 from unittest.mock import patch
 
-from kaomojo_client.cli import load_key, observations, save_key
+from kaomojo_client.cli import collect, load_key, load_sent_ids, observations, save_key, setup
 
 
 class ClientTest(unittest.TestCase):
@@ -46,6 +47,32 @@ class ClientTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "does not look"):
                 save_key(Path(directory) / "credentials.json", "not-a-key")
+
+    def test_setup_automatically_baselines_existing_observations(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            record = {
+                "type": "response_item",
+                "timestamp": "2026-08-01T00:00:00Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "(＾▽＾) Existing."}],
+                },
+            }
+            (sessions / "session.jsonl").write_text(json.dumps(record), encoding="utf-8")
+            state = root / "state.json"
+            args = SimpleNamespace(
+                sessions=sessions,
+                state=state,
+                credentials=root / "credentials.json",
+                key_stdin=True,
+            )
+            with patch("kaomojo_client.cli.sys.stdin.readline", return_value="ar_abcdefghijklmnopqrstuvwxyz\n"):
+                setup(args)
+            self.assertEqual(len(load_sent_ids(state)), 1)
 
 
 if __name__ == "__main__":
