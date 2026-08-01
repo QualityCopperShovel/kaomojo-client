@@ -31,10 +31,10 @@ kaomojo collect
 Because the client is installed directly from GitHub, refresh it with:
 
 ```bash
-pipx reinstall kaomojo-client
+pipx install --force --pip-args=--no-cache-dir git+https://github.com/QualityCopperShovel/kaomojo-client.git
 ```
 
-`pipx upgrade` does not refresh a VCS installation reliably.
+The forced no-cache install is necessary because `pipx upgrade` and `pipx reinstall` may reuse the original VCS build.
 
 Every `kaomojo collect` run submits only sightings created after setup. Run it periodically with your preferred scheduler. Codex and Claude Code sessions are read locally. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
