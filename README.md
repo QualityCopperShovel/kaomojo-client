@@ -18,7 +18,7 @@ Create an API key at [kaomojo.com](https://kaomojo.com), then run:
 kaomojo setup
 ```
 
-Paste the key at the hidden prompt. The client stores it in `~/.config/kaomojo/credentials.json` with user-only permissions and automatically marks conversations already on disk as seen.
+Paste the key at the hidden prompt. The client stores it in the operating system's standard per-user configuration directory with user-only permissions and prints the exact location. It also automatically marks conversations already on disk as seen.
 
 Start collecting:
 

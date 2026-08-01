@@ -10,11 +10,12 @@ import sys
 import time
 
 import requests
+from platformdirs import user_config_path, user_state_path
 
 
 API_URL = "https://kaomojo.com/api/v1/kaomojis"
-DEFAULT_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kaomojo"
-DEFAULT_STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "kaomojo"
+DEFAULT_CONFIG = user_config_path("kaomojo", appauthor=False)
+DEFAULT_STATE = user_state_path("kaomojo", appauthor=False)
 DEFAULT_SESSIONS = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
 
 
