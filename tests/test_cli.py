@@ -11,6 +11,8 @@ import requests
 from kaomojo_client.cli import (
     claude_observations,
     baseline_new_sources,
+    configure_launchd_schedule,
+    configure_systemd_schedule,
     load_key,
     load_sent_ids,
     load_state,
@@ -136,8 +138,44 @@ class ClientTest(unittest.TestCase):
                 key_stdin=True,
             )
             with patch("kaomojo_client.cli.sys.stdin.readline", return_value="ar_abcdefghijklmnopqrstuvwxyz\n"):
-                setup(args)
+                with patch("kaomojo_client.cli.configure_schedule") as configure_schedule:
+                    setup(args)
             self.assertEqual(len(load_sent_ids(state)), 1)
+            configure_schedule.assert_called_once_with(args)
+
+    def test_systemd_schedule_runs_every_five_minutes_with_deadline(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("kaomojo_client.cli.Path.home", return_value=root):
+                with patch("kaomojo_client.cli.run_scheduler_command") as run:
+                    configure_systemd_schedule(Path("/opt/kaomojo/bin/kaomojo"))
+            service = (root / ".config/systemd/user/kaomojo-collect.service").read_text()
+            timer = (root / ".config/systemd/user/kaomojo-collect.timer").read_text()
+            self.assertIn('ExecStart="/opt/kaomojo/bin/kaomojo" collect', service)
+            self.assertIn("TimeoutStartSec=150", service)
+            self.assertIn("OnCalendar=*:0/5", timer)
+            self.assertIn("AccuracySec=15s", timer)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[-1].args[0],
+                ["systemctl", "--user", "enable", "--now", "kaomojo-collect.timer"],
+            )
+
+    def test_launchd_schedule_runs_every_five_minutes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("kaomojo_client.cli.Path.home", return_value=root):
+                with patch("kaomojo_client.cli.DEFAULT_STATE", root / "state"):
+                    with patch("kaomojo_client.cli.run_scheduler_command") as run:
+                        configure_launchd_schedule(Path("/opt/kaomojo/bin/kaomojo"))
+            plist_path = root / "Library/LaunchAgents/com.kaomojo.collect.plist"
+            with plist_path.open("rb") as source:
+                import plistlib
+                payload = plistlib.load(source)
+            self.assertEqual(payload["StartInterval"], 300)
+            self.assertEqual(payload["ProgramArguments"], ["/opt/kaomojo/bin/kaomojo", "collect"])
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0][0:2], ["launchctl", "bootstrap"])
 
     def test_upgrade_baselines_claude_without_replaying_history(self):
         with TemporaryDirectory() as directory:

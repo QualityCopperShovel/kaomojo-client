@@ -6,6 +6,8 @@ import getpass
 import hashlib
 import json
 import os
+import plistlib
+import subprocess
 import sys
 import time
 
@@ -20,6 +22,8 @@ DEFAULT_SESSIONS = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / 
 DEFAULT_CLAUDE_PROJECTS = Path(
     os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
 ) / "projects"
+COLLECTION_INTERVAL_SECONDS = 300
+SCHEDULER_TIMEOUT_SECONDS = 15
 
 
 def content_text(content, allowed_types=None):
@@ -285,6 +289,105 @@ def setup(args):
             print(f"Initialized {source}: {count} existing observations marked as seen")
     else:
         print("Collection was already initialized; existing state was preserved")
+    if not getattr(args, "no_schedule", False):
+        configure_schedule(args)
+
+
+def run_scheduler_command(command, check=True):
+    try:
+        return subprocess.run(
+            command,
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=SCHEDULER_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(f"Required scheduler command is unavailable: {command[0]}") from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"Scheduler command timed out after {SCHEDULER_TIMEOUT_SECONDS} seconds: {command[0]}"
+        ) from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "unknown scheduler error").strip()
+        raise RuntimeError(f"Scheduler command failed: {detail}") from error
+
+
+def systemd_quote(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def configure_systemd_schedule(executable):
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    service = unit_dir / "kaomojo-collect.service"
+    timer = unit_dir / "kaomojo-collect.timer"
+    service.write_text(
+        "[Unit]\n"
+        "Description=Collect new Kaomojo sightings\n"
+        "Documentation=https://kaomojo.com/agent-guide\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={systemd_quote(executable)} collect\n"
+        "TimeoutStartSec=150\n",
+        encoding="utf-8",
+    )
+    timer.write_text(
+        "[Unit]\n"
+        "Description=Collect new Kaomojo sightings every five minutes\n\n"
+        "[Timer]\n"
+        "OnCalendar=*:0/5\n"
+        "Persistent=true\n"
+        "AccuracySec=15s\n"
+        "RandomizedDelaySec=15s\n"
+        "Unit=kaomojo-collect.service\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n",
+        encoding="utf-8",
+    )
+    run_scheduler_command(["systemctl", "--user", "daemon-reload"])
+    run_scheduler_command(["systemctl", "--user", "enable", "--now", timer.name])
+    print(f"Scheduled collection every five minutes with {timer}")
+
+
+def configure_launchd_schedule(executable):
+    agents_dir = Path.home() / "Library" / "LaunchAgents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    label = "com.kaomojo.collect"
+    plist = agents_dir / f"{label}.plist"
+    log_dir = DEFAULT_STATE / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "Label": label,
+        "ProgramArguments": [str(executable), "collect"],
+        "RunAtLoad": True,
+        "StartInterval": COLLECTION_INTERVAL_SECONDS,
+        "ProcessType": "Background",
+        "StandardOutPath": str(log_dir / "collect.log"),
+        "StandardErrorPath": str(log_dir / "collect-error.log"),
+    }
+    with plist.open("wb") as output:
+        plistlib.dump(payload, output)
+    domain = f"gui/{os.getuid()}"
+    run_scheduler_command(
+        ["launchctl", "bootout", domain, str(plist)],
+        check=False,
+    )
+    run_scheduler_command(["launchctl", "bootstrap", domain, str(plist)])
+    print(f"Scheduled collection every five minutes with {plist}")
+
+
+def configure_schedule(args):
+    executable = Path(sys.argv[0]).resolve()
+    if sys.platform.startswith("linux"):
+        configure_systemd_schedule(executable)
+    elif sys.platform == "darwin":
+        configure_launchd_schedule(executable)
+    else:
+        raise RuntimeError(
+            f"Automatic recurring collection is not supported on {sys.platform}; "
+            "run `kaomojo collect` every five minutes with the native scheduler"
+        )
 
 
 def parser():
@@ -296,7 +399,16 @@ def parser():
     setup_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     setup_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     setup_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
+    setup_parser.add_argument(
+        "--no-schedule",
+        action="store_true",
+        help="Do not configure recurring five-minute collection",
+    )
     setup_parser.set_defaults(handler=setup)
+    schedule_parser = commands.add_parser(
+        "schedule", help="Configure recurring five-minute collection",
+    )
+    schedule_parser.set_defaults(handler=configure_schedule)
     collect_parser = commands.add_parser(
         "collect", help="Collect new sightings from Codex and Claude Code sessions",
     )

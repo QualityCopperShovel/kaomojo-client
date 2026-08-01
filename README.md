@@ -20,6 +20,8 @@ kaomojo setup
 
 Paste the key at the hidden prompt. The client stores it in the operating system's standard per-user configuration directory with user-only permissions and prints the exact location. It also automatically marks conversations already on disk as seen.
 
+Setup also installs a native five-minute recurring collector: a user systemd timer on Linux or a LaunchAgent on macOS. Use `kaomojo schedule` to repair or refresh it, or `kaomojo setup --no-schedule` when another scheduler already owns collection.
+
 Start collecting:
 
 ```bash
@@ -36,7 +38,7 @@ pipx install --force --pip-args=--no-cache-dir git+https://github.com/QualityCop
 
 The forced no-cache install is necessary because `pipx upgrade` and `pipx reinstall` may reuse the original VCS build.
 
-Every `kaomojo collect` run submits only sightings created after setup. Run it periodically with your preferred scheduler. Codex and Claude Code sessions are read locally. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. Codex and Claude Code sessions are read locally. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 
