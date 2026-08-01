@@ -13,6 +13,7 @@ import plistlib
 import subprocess
 import sys
 import time
+import unicodedata
 
 import requests
 from platformdirs import user_config_path, user_state_path
@@ -46,6 +47,14 @@ def content_text(content, allowed_types=None):
 
 def normalized_model(value):
     return value.strip() if isinstance(value, str) and value.strip() != "<synthetic>" else None
+
+
+def message_prefix(text):
+    """Return the first 30 characters with control characters made API-safe."""
+    return "".join(
+        " " if unicodedata.category(character).startswith("C") else character
+        for character in text[:30]
+    ).strip()
 
 
 def observations(session_dir, sent_ids, context=None):
@@ -82,7 +91,7 @@ def observations(session_dir, sent_ids, context=None):
                 continue
             item = {
                 "idempotency_key": observation_id,
-                "message_start": text[:30],
+                "message_start": message_prefix(text),
                 "harness": "codex",
                 "observed_at": timestamp,
                 "conversation_hash": conversation_hash,
@@ -119,7 +128,7 @@ def claude_observations(projects_dir, sent_ids, context=None):
                 continue
             item = {
                 "idempotency_key": observation_id,
-                "message_start": text[:30],
+                "message_start": message_prefix(text),
                 "harness": "claude_code",
                 "observed_at": timestamp,
                 "conversation_hash": conversation_hash,
@@ -244,7 +253,16 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
             time.sleep(min(2**attempt, max(0, deadline - time.monotonic())))
             continue
         if response.status_code not in {429, 503}:
-            response.raise_for_status()
+            if not response.ok:
+                try:
+                    error = response.json().get("error", {})
+                    message = error.get("message") if isinstance(error, dict) else error
+                except (ValueError, AttributeError):
+                    message = None
+                raise RuntimeError(
+                    f"Kaomojo rejected the batch with HTTP {response.status_code}: "
+                    f"{message or response.text[:200] or 'unknown error'}"
+                )
             payload = response.json()
             results = payload.get("results")
             if (

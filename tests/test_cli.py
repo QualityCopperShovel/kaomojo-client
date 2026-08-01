@@ -83,6 +83,22 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(result[0]["message_start"], text[:30])
             self.assertEqual(len(result[0]["message_start"]), 30)
 
+    def test_observation_prefix_replaces_control_characters(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory)
+            record = {
+                "type": "response_item",
+                "timestamp": "2026-08-01T00:00:00Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "(•‿•) First line\nsecond line"}],
+                },
+            }
+            (sessions / "session.jsonl").write_text(json.dumps(record), encoding="utf-8")
+            result = list(observations(sessions, set()))
+        self.assertEqual(result[0]["message_start"], "(•‿•) First line second line")
+
     def test_claude_observation_contains_prefix_source_model_and_hash(self):
         with TemporaryDirectory() as directory:
             projects = Path(directory)
@@ -220,12 +236,24 @@ class ClientTest(unittest.TestCase):
     def test_malformed_submission_success_is_rejected(self):
         response = SimpleNamespace(
             status_code=202,
+            ok=True,
             json=lambda: {"accepted": 1, "rejected": 0},
             raise_for_status=lambda: None,
         )
         session = SimpleNamespace(post=lambda *args, **kwargs: response)
         with self.assertRaisesRegex(RuntimeError, "malformed success"):
             post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "(._.)"}])
+
+    def test_submission_validation_error_is_concrete(self):
+        response = SimpleNamespace(
+            status_code=400,
+            ok=False,
+            json=lambda: {"error": {"message": "message_start contains control characters"}},
+            text="",
+        )
+        session = SimpleNamespace(post=lambda *args, **kwargs: response)
+        with self.assertRaisesRegex(RuntimeError, "control characters"):
+            post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "bad"}])
 
     def test_history_import_checkpoints_and_reruns_without_duplicates(self):
         with TemporaryDirectory() as directory:
