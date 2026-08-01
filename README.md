@@ -1,6 +1,6 @@
 # Kaomojo Client
 
-The default client for collecting kaomoji sightings from local Codex sessions and submitting them to [Kaomojo](https://kaomojo.com).
+The default client for collecting kaomoji sightings from local Codex and Claude Code sessions and submitting them to [Kaomojo](https://kaomojo.com).
 
 ## Install
 
@@ -26,7 +26,7 @@ Start collecting:
 kaomojo collect
 ```
 
-Every `kaomojo collect` run submits only sightings created after setup. Run it periodically with your preferred scheduler. Codex sessions are read locally. Only the first 50 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. Run it periodically with your preferred scheduler. Codex and Claude Code sessions are read locally. Only the first 50 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kaomojo-client"
-version = "1.0.0"
-description = "Collect kaomoji sightings from local coding-agent sessions"
+version = "2.0.0"
+description = "Collect kaomoji sightings from local Codex and Claude Code sessions"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

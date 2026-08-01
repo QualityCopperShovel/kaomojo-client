@@ -6,8 +6,19 @@ import os
 import stat
 import unittest
 from unittest.mock import patch
+import requests
 
-from kaomojo_client.cli import collect, load_key, load_sent_ids, observations, save_key, setup
+from kaomojo_client.cli import (
+    claude_observations,
+    baseline_new_sources,
+    load_key,
+    load_sent_ids,
+    load_state,
+    observations,
+    post_batch,
+    save_key,
+    setup,
+)
 
 
 class ClientTest(unittest.TestCase):
@@ -63,6 +74,34 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(result[0]["message_start"], text[:50])
             self.assertEqual(len(result[0]["message_start"]), 50)
 
+    def test_claude_observation_contains_prefix_source_model_and_hash(self):
+        with TemporaryDirectory() as directory:
+            projects = Path(directory)
+            records = [
+                {
+                    "type": "assistant",
+                    "uuid": "message-uuid",
+                    "timestamp": "2026-08-01T00:00:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-test",
+                        "content": [
+                            {"type": "thinking", "thinking": "private"},
+                            {"type": "text", "text": "(╥﹏╥) Fixed it."},
+                            {"type": "tool_use", "name": "ignored"},
+                        ],
+                    },
+                },
+            ]
+            (projects / "session.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records), encoding="utf-8"
+            )
+            result = list(claude_observations(projects, set()))
+            self.assertEqual(result[0]["message_start"], "(╥﹏╥) Fixed it.")
+            self.assertEqual(result[0]["source"], "claude_code")
+            self.assertEqual(result[0]["model"], "claude-opus-test")
+            self.assertTrue(result[0]["conversation_hash"].startswith("sha256:"))
+
     def test_invalid_key_is_rejected(self):
         with TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "does not look"):
@@ -85,7 +124,8 @@ class ClientTest(unittest.TestCase):
             (sessions / "session.jsonl").write_text(json.dumps(record), encoding="utf-8")
             state = root / "state.json"
             args = SimpleNamespace(
-                sessions=sessions,
+                codex_sessions=sessions,
+                claude_projects=root / "missing-claude-projects",
                 state=state,
                 credentials=root / "credentials.json",
                 key_stdin=True,
@@ -93,6 +133,44 @@ class ClientTest(unittest.TestCase):
             with patch("kaomojo_client.cli.sys.stdin.readline", return_value="ar_abcdefghijklmnopqrstuvwxyz\n"):
                 setup(args)
             self.assertEqual(len(load_sent_ids(state)), 1)
+
+    def test_upgrade_baselines_claude_without_replaying_history(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex = root / "codex"
+            claude = root / "claude"
+            codex.mkdir()
+            claude.mkdir()
+            (claude / "session.jsonl").write_text(json.dumps({
+                "type": "assistant",
+                "uuid": "existing-claude-message",
+                "timestamp": "2026-08-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "(￣▽￣) Existing."}],
+                },
+            }), encoding="utf-8")
+            state = root / "state.json"
+            state.write_text(json.dumps(["existing-codex-id"]), encoding="utf-8")
+            args = SimpleNamespace(
+                codex_sessions=codex,
+                claude_projects=claude,
+                state=state,
+            )
+            sent_ids, initialized = load_state(state)
+            added = baseline_new_sources(args, sent_ids, initialized)
+            self.assertEqual(added, {"claude_code": 1})
+            sent_ids, initialized = load_state(state)
+            self.assertEqual(len(sent_ids), 2)
+            self.assertEqual(initialized, {"codex", "claude_code"})
+
+    def test_submission_timeout_terminates(self):
+        session = SimpleNamespace(post=lambda *args, **kwargs: (_ for _ in ()).throw(
+            requests.Timeout("upstream timed out")
+        ))
+        with patch("kaomojo_client.cli.time.sleep", return_value=None):
+            with self.assertRaisesRegex(requests.Timeout, "upstream timed out"):
+                post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "(._.)"}])
 
 
 if __name__ == "__main__":
