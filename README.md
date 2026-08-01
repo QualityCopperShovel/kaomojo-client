@@ -18,7 +18,7 @@ Create an API key at [kaomojo.com](https://kaomojo.com), then run:
 kaomojo setup
 ```
 
-Paste the key at the hidden prompt. The client stores it in `~/.config/kaomojo/credentials.json` with user-only permissions. `KAOMOJO_API_KEY` may be used instead when a platform secret manager injects environment variables.
+Paste the key at the hidden prompt. The client stores it in `~/.config/kaomojo/credentials.json` with user-only permissions.
 
 Skip existing history, then collect new sightings:
 

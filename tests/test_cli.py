@@ -14,7 +14,7 @@ class ClientTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "config" / "credentials.json"
             save_key(path, "ar_abcdefghijklmnopqrstuvwxyz")
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ, {"KAOMOJO_API_KEY": "ar_environment_is_not_supported"}):
                 self.assertEqual(load_key(path), "ar_abcdefghijklmnopqrstuvwxyz")
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)

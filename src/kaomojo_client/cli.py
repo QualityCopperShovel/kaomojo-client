@@ -93,9 +93,6 @@ def save_key(path, key):
 
 
 def load_key(path):
-    environment_key = os.environ.get("KAOMOJO_API_KEY", "").strip()
-    if environment_key:
-        return environment_key
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
@@ -174,7 +171,7 @@ def collect(args):
 def setup(args):
     key = sys.stdin.readline().strip() if args.key_stdin else getpass.getpass("Paste your Kaomojo API key: ").strip()
     save_key(args.credentials, key)
-    print(f"Saved KAOMOJO_API_KEY securely in {args.credentials}")
+    print(f"Saved your API key securely in {args.credentials}")
 
 
 def parser():
