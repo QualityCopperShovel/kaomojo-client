@@ -75,7 +75,7 @@ def observations(session_dir, sent_ids, context=None):
             item = {
                 "idempotency_key": observation_id,
                 "message_start": text[:50],
-                "source": "codex",
+                "harness": "codex",
                 "observed_at": timestamp,
                 "conversation_hash": conversation_hash,
             }
@@ -112,7 +112,7 @@ def claude_observations(projects_dir, sent_ids, context=None):
             item = {
                 "idempotency_key": observation_id,
                 "message_start": text[:50],
-                "source": "claude_code",
+                "harness": "claude_code",
                 "observed_at": timestamp,
                 "conversation_hash": conversation_hash,
             }

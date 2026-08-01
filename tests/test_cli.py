@@ -103,7 +103,7 @@ class ClientTest(unittest.TestCase):
             )
             result = list(claude_observations(projects, set()))
             self.assertEqual(result[0]["message_start"], "(╥﹏╥) Fixed it.")
-            self.assertEqual(result[0]["source"], "claude_code")
+            self.assertEqual(result[0]["harness"], "claude_code")
             self.assertEqual(result[0]["model"], "claude-opus-test")
             self.assertTrue(result[0]["conversation_hash"].startswith("sha256:"))
 
