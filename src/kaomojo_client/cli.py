@@ -29,8 +29,15 @@ DEFAULT_CLAUDE_PROJECTS = Path(
 COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
 DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
-MAX_BATCH_ITEMS = 500
-TARGET_BATCH_BYTES = 60 * 1024
+MAX_BATCH_ITEMS = 100
+TARGET_BATCH_BYTES = 24 * 1024
+MIN_REQUEST_SECONDS = 5
+
+
+class SubmissionError(RuntimeError):
+    def __init__(self, status_code, message):
+        self.status_code = status_code
+        super().__init__(message)
 
 
 def content_text(content, allowed_types=None):
@@ -242,26 +249,30 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
         raise ValueError("Submission deadline must be positive")
     deadline = time.monotonic() + deadline_seconds
     for attempt in range(4):
+        remaining = deadline - time.monotonic()
+        if remaining < MIN_REQUEST_SECONDS:
+            raise TimeoutError("Kaomojo submission deadline expired before another usable attempt")
         try:
             response = session.post(
                 API_URL,
                 headers={"X-API-Key": api_key},
                 json={"observations": batch},
-                timeout=min(100, max(0.1, deadline - time.monotonic())),
+                timeout=min(100, remaining),
             )
         except requests.RequestException:
             if attempt == 3 or time.monotonic() >= deadline:
                 raise
             time.sleep(min(2**attempt, max(0, deadline - time.monotonic())))
             continue
-        if response.status_code not in {429, 503}:
+        if response.status_code != 429 and response.status_code < 500:
             if not response.ok:
                 try:
                     error = response.json().get("error", {})
                     message = error.get("message") if isinstance(error, dict) else error
                 except (ValueError, AttributeError):
                     message = None
-                raise RuntimeError(
+                raise SubmissionError(
+                    response.status_code,
                     f"Kaomojo rejected the batch with HTTP {response.status_code}: "
                     f"{message or response.text[:200] or 'unknown error'}"
                 )
@@ -282,14 +293,57 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
             ):
                 raise RuntimeError("Kaomojo returned a malformed success response")
             return payload
-        if attempt == 3 or time.monotonic() >= deadline:
-            response.raise_for_status()
+        if attempt == 3 or deadline - time.monotonic() < MIN_REQUEST_SECONDS:
+            try:
+                error = response.json().get("error", {})
+                message = error.get("message") if isinstance(error, dict) else error
+            except (ValueError, AttributeError):
+                message = None
+            raise SubmissionError(
+                response.status_code,
+                f"Kaomojo failed the batch with HTTP {response.status_code}: "
+                f"{message or response.text[:200] or 'unknown error'}",
+            )
         try:
             delay = int(response.headers.get("Retry-After", 2**attempt))
         except ValueError:
             delay = 2**attempt
         time.sleep(min(delay, max(0, deadline - time.monotonic())))
     raise RuntimeError("Kaomojo submission did not reach a terminal state")
+
+
+def post_import_batch(session, api_key, batch, deadline_seconds):
+    """Submit history adaptively; isolate persistent server failures without stalling."""
+    try:
+        return post_batch(session, api_key, batch, deadline_seconds)
+    except SubmissionError as error:
+        if error.status_code < 500:
+            raise
+        if len(batch) == 1:
+            if error.status_code != 500:
+                raise
+            return {
+                "accepted": 0,
+                "rejected": 0,
+                "results": [],
+                "quarantined": [{
+                    "idempotency_key": batch[0]["idempotency_key"],
+                    "error": str(error),
+                }],
+            }
+        midpoint = len(batch) // 2
+        started = time.monotonic()
+        left = post_import_batch(session, api_key, batch[:midpoint], deadline_seconds)
+        remaining = deadline_seconds - (time.monotonic() - started)
+        if remaining < MIN_REQUEST_SECONDS:
+            raise TimeoutError("History import deadline expired while isolating a failed batch")
+        right = post_import_batch(session, api_key, batch[midpoint:], remaining)
+        return {
+            "accepted": left["accepted"] + right["accepted"],
+            "rejected": left["rejected"] + right["rejected"],
+            "results": left["results"] + right["results"],
+            "quarantined": left.get("quarantined", []) + right.get("quarantined", []),
+        }
 
 
 def observation_batches(observations):
@@ -363,6 +417,7 @@ def new_import_state():
         "version": 1,
         "status": "pending",
         "processed_ids": [],
+        "quarantined": [],
         "started_at": now,
         "updated_at": now,
         "total": None,
@@ -382,8 +437,10 @@ def load_import_state(path):
         }
         or not isinstance(value.get("processed_ids"), list)
         or not all(isinstance(item, str) for item in value["processed_ids"])
+        or not isinstance(value.get("quarantined", []), list)
     ):
         raise ValueError(f"Invalid history import state file: {path}")
+    value.setdefault("quarantined", [])
     return value
 
 
@@ -432,16 +489,18 @@ def import_history_locked(args):
                     raise RuntimeError(
                         "History import deadline exceeded; rerun `kaomojo import-history` to resume"
                     )
-                result = post_batch(
+                result = post_import_batch(
                     session, api_key, batch, deadline_seconds=min(120, remaining),
                 )
                 accepted += result["accepted"]
                 rejected += result["rejected"]
+                state["quarantined"].extend(result.get("quarantined", []))
                 state["processed_ids"].extend(item["idempotency_key"] for item in batch)
                 save_import_state(args.import_state, state, "running", total)
                 print(
                     f"History import: {len(state['processed_ids'])}/{total} processed "
-                    f"({accepted} accepted, {rejected} rejected this run)"
+                    f"({accepted} accepted, {rejected} rejected, "
+                    f"{len(state['quarantined'])} quarantined this run)"
                 )
     except KeyboardInterrupt as error:
         save_import_state(args.import_state, state, "cancelled", total, "Cancelled by user")

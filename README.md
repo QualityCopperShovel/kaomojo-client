@@ -38,7 +38,7 @@ pipx install --force --pip-args=--no-cache-dir git+https://github.com/QualityCop
 
 The forced no-cache install is necessary because `pipx upgrade` and `pipx reinstall` may reuse the original VCS build.
 
-Every `kaomojo collect` run submits only sightings created after setup. Codex and Claude Code sessions are read locally. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory and every project in the user's Claude Code projects directory, not only the current project. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
 ## Import earlier sightings
 
@@ -48,7 +48,7 @@ Setup starts fresh by default. Power users can scan conversations that existed b
 kaomojo import-history
 ```
 
-This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports process newest history first, pack up to 500 observations per request while staying below the API body limit, checkpoint after every completed batch, and stop after one hour; rerun the same command to resume. Stable IDs make retries safe, including for users who already completed part of an import.
+This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports process newest history first, pack up to 100 observations per request while staying below the API body limit, checkpoint after every completed batch, and stop after one hour; rerun the same command to resume. Persistent HTTP 500 batches are divided until one offending observation is isolated and recorded in the local import state's `quarantined` list, allowing the remaining history to continue. Stable IDs make retries safe, including for users who already completed part of an import.
 
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 

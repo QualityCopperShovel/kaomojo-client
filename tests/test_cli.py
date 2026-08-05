@@ -21,6 +21,8 @@ from kaomojo_client.cli import (
     observations,
     observation_batches,
     post_batch,
+    post_import_batch,
+    SubmissionError,
     parser,
     save_key,
     setup,
@@ -41,9 +43,9 @@ class ClientTest(unittest.TestCase):
         batches = list(observation_batches(observations))
         self.assertGreater(len(batches), 1)
         self.assertEqual(sum(map(len, batches)), 501)
-        self.assertTrue(all(len(batch) <= 500 for batch in batches))
+        self.assertTrue(all(len(batch) <= 100 for batch in batches))
         self.assertTrue(all(
-            len(json.dumps({"observations": batch}).encode("utf-8")) <= 60 * 1024
+            len(json.dumps({"observations": batch}).encode("utf-8")) <= 24 * 1024
             for batch in batches
         ))
 
@@ -274,6 +276,35 @@ class ClientTest(unittest.TestCase):
         session = SimpleNamespace(post=lambda *args, **kwargs: response)
         with self.assertRaisesRegex(RuntimeError, "control characters"):
             post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "bad"}])
+
+    def test_history_submission_splits_failed_batch_and_quarantines_poison_item(self):
+        batch = [
+            {"idempotency_key": "good-one"},
+            {"idempotency_key": "poison"},
+            {"idempotency_key": "good-two"},
+        ]
+
+        def submit(session, key, items, deadline_seconds=120):
+            if any(item["idempotency_key"] == "poison" for item in items):
+                raise SubmissionError(500, "catalog failure")
+            return {
+                "accepted": len(items), "rejected": 0,
+                "results": [{"idempotency_key": item["idempotency_key"], "accepted": True}
+                            for item in items],
+            }
+
+        with patch("kaomojo_client.cli.post_batch", side_effect=submit):
+            result = post_import_batch(object(), "ar_test", batch, 120)
+        self.assertEqual(result["accepted"], 2)
+        self.assertEqual(result["quarantined"][0]["idempotency_key"], "poison")
+
+    def test_history_submission_does_not_quarantine_transient_single_failure(self):
+        with patch(
+            "kaomojo_client.cli.post_batch",
+            side_effect=SubmissionError(503, "extractor unavailable"),
+        ):
+            with self.assertRaisesRegex(SubmissionError, "extractor unavailable"):
+                post_import_batch(object(), "ar_test", [{"idempotency_key": "one"}], 120)
 
     def test_history_import_checkpoints_and_reruns_without_duplicates(self):
         with TemporaryDirectory() as directory:
