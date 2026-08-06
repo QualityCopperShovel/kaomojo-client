@@ -292,6 +292,10 @@ class ClientTest(unittest.TestCase):
                 run.call_args_list[-1].args[0],
                 ["systemctl", "--user", "enable", "--now", "kaomojo-collect.timer"],
             )
+            self.assertEqual(
+                run.call_args_list[-1].kwargs["env"]["XDG_CONFIG_HOME"],
+                str(root / ".config"),
+            )
 
     def test_launchd_schedule_runs_every_five_minutes(self):
         with TemporaryDirectory() as directory:

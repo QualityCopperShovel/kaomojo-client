@@ -683,7 +683,7 @@ def setup(args):
         configure_schedule(args)
 
 
-def run_scheduler_command(command, check=True):
+def run_scheduler_command(command, check=True, env=None):
     try:
         return subprocess.run(
             command,
@@ -691,6 +691,7 @@ def run_scheduler_command(command, check=True):
             capture_output=True,
             text=True,
             timeout=SCHEDULER_TIMEOUT_SECONDS,
+            env=env,
         )
     except FileNotFoundError as error:
         raise RuntimeError(f"Required scheduler command is unavailable: {command[0]}") from error
@@ -708,7 +709,8 @@ def systemd_quote(value):
 
 
 def configure_systemd_schedule(executable):
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    unit_dir = config_home / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     service = unit_dir / "kaomojo-collect.service"
     timer = unit_dir / "kaomojo-collect.timer"
@@ -735,8 +737,14 @@ def configure_systemd_schedule(executable):
         "WantedBy=timers.target\n",
         encoding="utf-8",
     )
-    run_scheduler_command(["systemctl", "--user", "daemon-reload"])
-    run_scheduler_command(["systemctl", "--user", "enable", "--now", timer.name])
+    scheduler_env = os.environ.copy()
+    scheduler_env["XDG_CONFIG_HOME"] = str(config_home)
+    run_scheduler_command(
+        ["systemctl", "--user", "daemon-reload"], env=scheduler_env,
+    )
+    run_scheduler_command(
+        ["systemctl", "--user", "enable", "--now", timer.name], env=scheduler_env,
+    )
     print(f"Scheduled collection every five minutes with {timer}")
 
 
