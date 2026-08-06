@@ -18,7 +18,7 @@ Create an API key at [kaomojo.com](https://kaomojo.com), then run:
 kaomojo setup
 ```
 
-Paste the key at the hidden prompt. The client stores it privately, then marks existing conversations as already seen using local ID hashes. It does not store or upload their text.
+When setup asks for it, paste your Kaomojo API key. The input is masked so the key is not displayed on screen. The client stores it privately, then marks existing conversations as already seen using local ID hashes. It does not store or upload their text.
 
 Setup also schedules collection every five minutes in the background, using systemd on most Linux distributions, a LaunchAgent on macOS, and the current user's Windows Task Scheduler on Windows. It keeps working after the terminal closes without leaving Kaomojo running continuously. Use `kaomojo schedule` to repair or refresh it. If no supported scheduler is available, setup stops with a clear error; configure an equivalent scheduler, then rerun setup with `--no-schedule`.
 
