@@ -35,7 +35,7 @@ COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
 WINDOWS_TASK_NAME = "Kaomojo Collect"
 DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
-MAX_BATCH_ITEMS = 100
+MAX_BATCH_ITEMS = 20
 TARGET_BATCH_BYTES = 24 * 1024
 MIN_REQUEST_SECONDS = 5
 UPDATE_MANIFEST_URL = "https://kaomojo.com/api/v1/client-release"
@@ -45,9 +45,25 @@ UPDATE_TIMEOUT_SECONDS = 180
 
 
 class SubmissionError(RuntimeError):
-    def __init__(self, status_code, message):
+    def __init__(self, status_code, message, code=None, retry_after=None):
         self.status_code = status_code
+        self.code = code
+        self.retry_after = retry_after
         super().__init__(message)
+
+
+ASCII_FACE_PATTERN = re.compile(
+    r"(?:[:;=8xX][\-^'\"]?[)(/\\DPpOo]|[)(/\\DPpOo][\-^'\"]?[:;=8xX])"
+)
+
+
+def may_contain_kaomoji(message_start):
+    """Reject only plain ASCII prose that cannot contain a text face."""
+    if any(ord(character) > 127 for character in message_start):
+        return True
+    if ASCII_FACE_PATTERN.search(message_start):
+        return True
+    return any(character in message_start for character in "()[]{}<>\\/^_|~`")
 
 
 def version_tuple(value):
@@ -358,17 +374,22 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
                 raise
             time.sleep(min(2**attempt, max(0, deadline - time.monotonic())))
             continue
+        error_code = None
+        error_message = None
+        try:
+            error_payload = response.json().get("error", {})
+            if isinstance(error_payload, dict):
+                error_code = error_payload.get("code")
+                error_message = error_payload.get("message")
+        except (ValueError, AttributeError):
+            pass
         if response.status_code != 429 and response.status_code < 500:
             if not response.ok:
-                try:
-                    error = response.json().get("error", {})
-                    message = error.get("message") if isinstance(error, dict) else error
-                except (ValueError, AttributeError):
-                    message = None
                 raise SubmissionError(
                     response.status_code,
                     f"Kaomojo rejected the batch with HTTP {response.status_code}: "
-                    f"{message or response.text[:200] or 'unknown error'}"
+                    f"{error_message or response.text[:200] or 'unknown error'}",
+                    code=error_code,
                 )
             payload = response.json()
             results = payload.get("results")
@@ -387,25 +408,48 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
             ):
                 raise RuntimeError("Kaomojo returned a malformed success response")
             return payload
-        if attempt == 3 or deadline - time.monotonic() < MIN_REQUEST_SECONDS:
-            try:
-                error = response.json().get("error", {})
-                message = error.get("message") if isinstance(error, dict) else error
-            except (ValueError, AttributeError):
-                message = None
+        retry_after = response.headers.get("Retry-After")
+        try:
+            retry_after = max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            retry_after = None
+        if error_code == "extraction_capacity":
             raise SubmissionError(
                 response.status_code,
-                f"Kaomojo failed the batch with HTTP {response.status_code}: "
-                f"{message or response.text[:200] or 'unknown error'}",
+                error_message or "Kaomoji extraction capacity was exceeded",
+                code=error_code,
+                retry_after=retry_after,
             )
-        try:
-            delay = int(response.headers.get("Retry-After", 2**attempt))
-        except ValueError:
-            delay = 2**attempt
+        if attempt == 3 or deadline - time.monotonic() < MIN_REQUEST_SECONDS:
+            raise SubmissionError(
+                response.status_code,
+                error_message or f"Kaomoji submission failed with HTTP {response.status_code}",
+                code=error_code,
+                retry_after=retry_after,
+            )
+        delay = retry_after if retry_after is not None else 2**attempt
         time.sleep(min(delay, max(0, deadline - time.monotonic())))
-    raise RuntimeError("Kaomojo submission did not reach a terminal state")
 
 
+def post_resilient_batch(session, api_key, batch, deadline_seconds=120):
+    """Split only capacity-limited batches; preserve every per-item result."""
+    started = time.monotonic()
+    try:
+        return post_batch(session, api_key, batch, deadline_seconds)
+    except SubmissionError as error:
+        if error.code != "extraction_capacity" or len(batch) == 1:
+            raise
+        remaining = deadline_seconds - (time.monotonic() - started)
+        if remaining < MIN_REQUEST_SECONDS * 2:
+            raise TimeoutError("Kaomojo submission deadline expired while splitting a batch") from error
+        midpoint = len(batch) // 2
+        left = post_resilient_batch(session, api_key, batch[:midpoint], remaining / 2)
+        right = post_resilient_batch(session, api_key, batch[midpoint:], remaining / 2)
+        return {
+            "accepted": left["accepted"] + right["accepted"],
+            "rejected": left["rejected"] + right["rejected"],
+            "results": left["results"] + right["results"],
+        }
 def record_rejections(reasons, result):
     reasons.update(
         item.get("reason", "Rejected without a reason")
@@ -489,20 +533,28 @@ def collect_locked(args):
     pending = list(all_observations(
         args.codex_sessions, args.claude_projects, sent_ids, args.context,
     ))
+    filtered = [item for item in pending if not may_contain_kaomoji(item["message_start"])]
+    pending = [item for item in pending if may_contain_kaomoji(item["message_start"])]
+    if filtered:
+        sent_ids.update(item["idempotency_key"] for item in filtered)
+        save_state(args.state, sent_ids, initialized_sources)
     api_key = load_key(args.credentials)
     accepted = rejected = 0
     rejection_reasons = Counter()
     warnings = Counter()
     with requests.Session() as session:
         for batch in observation_batches(pending):
-            result = post_batch(session, api_key, batch)
+            result = post_resilient_batch(session, api_key, batch)
             accepted += result["accepted"]
             rejected += result["rejected"]
             record_rejections(rejection_reasons, result)
             record_warnings(warnings, result)
             sent_ids.update(item["idempotency_key"] for item in batch)
             save_state(args.state, sent_ids, initialized_sources)
-    print(f"Complete: {accepted} accepted, {rejected} rejected, {len(pending)} processed")
+    print(
+        f"Complete: {accepted} accepted, {rejected} rejected, "
+        f"{len(filtered)} plain-text prefixes skipped locally"
+    )
     print_rejections(rejection_reasons)
     print_warnings(warnings)
 
@@ -566,6 +618,9 @@ def import_history_locked(args):
         args.codex_sessions, args.claude_projects, processed_ids,
     ))
     pending.sort(key=lambda item: item["observed_at"], reverse=True)
+    filtered = [item for item in pending if not may_contain_kaomoji(item["message_start"])]
+    pending = [item for item in pending if may_contain_kaomoji(item["message_start"])]
+    state["processed_ids"].extend(item["idempotency_key"] for item in filtered)
     total = len(processed_ids) + len(pending)
     save_import_state(args.import_state, state, "running", total)
     print(f"History import: {len(processed_ids)} already processed, {len(pending)} remaining")
@@ -584,7 +639,7 @@ def import_history_locked(args):
                     raise RuntimeError(
                         "History import deadline exceeded; rerun `kaomojo import-history` to resume"
                     )
-                result = post_batch(
+                result = post_resilient_batch(
                     session, api_key, batch, deadline_seconds=min(120, remaining),
                 )
                 accepted += result["accepted"]

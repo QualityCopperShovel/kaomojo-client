@@ -20,6 +20,7 @@ from kaomojo_client.cli import (
     load_key,
     load_sent_ids,
     load_state,
+    may_contain_kaomoji,
     maybe_auto_update,
     observations,
     observation_batches,
@@ -42,12 +43,12 @@ class ClientTest(unittest.TestCase):
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.10.0",
+                    "version": "4.11.0",
                     "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
                     "commit": "a" * 40,
                 },
             )
-            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.10.0\n")]
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.11.0\n")]
             with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
                 "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
             ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:
@@ -103,11 +104,42 @@ class ClientTest(unittest.TestCase):
         batches = list(observation_batches(observations))
         self.assertGreater(len(batches), 1)
         self.assertEqual(sum(map(len, batches)), 501)
-        self.assertTrue(all(len(batch) <= 100 for batch in batches))
+        self.assertTrue(all(len(batch) <= 20 for batch in batches))
         self.assertTrue(all(
             len(json.dumps({"observations": batch}).encode("utf-8")) <= 24 * 1024
             for batch in batches
         ))
+
+    def test_plain_text_prefilter_is_conservative(self):
+        self.assertFalse(may_contain_kaomoji("Finished updating the tests."))
+        for value in ("(＾▽＾) Done", "hello :)", "Done — (._.)", "XD"):
+            self.assertTrue(may_contain_kaomoji(value), value)
+
+    def test_capacity_failure_is_split_without_reposting_successes(self):
+        success = lambda items: SimpleNamespace(
+            status_code=202, ok=True, headers={}, text="",
+            json=lambda: {
+                "accepted": len(items), "rejected": 0,
+                "results": [{"idempotency_key": item["idempotency_key"], "accepted": True}
+                            for item in items],
+            },
+        )
+        calls = []
+        def post(*args, **kwargs):
+            items = kwargs["json"]["observations"]
+            calls.append(len(items))
+            if len(items) > 1:
+                return SimpleNamespace(
+                    status_code=503, ok=False, headers={"Retry-After": "1"}, text="",
+                    json=lambda: {"error": {"code": "extraction_capacity", "message": "split"}},
+                )
+            return success(items)
+        from kaomojo_client.cli import post_resilient_batch
+        batch = [{"idempotency_key": str(index), "message_start": "(._.)"}
+                 for index in range(2)]
+        result = post_resilient_batch(SimpleNamespace(post=post), "ar_abcdefghijklmnopqrstuvwxyz", batch)
+        self.assertEqual(result["accepted"], 2)
+        self.assertEqual(calls, [2, 1, 1])
 
     def test_help_names_both_supported_agents(self):
         help_text = parser().format_help()
