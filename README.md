@@ -42,7 +42,7 @@ Every `kaomojo collect` run submits only sightings created after setup. By defau
 
 ## Import earlier sightings
 
-Setup starts fresh by default. Power users can scan conversations that existed before setup with:
+Setup starts fresh by default. To scan conversations that existed before setup, run:
 
 ```bash
 kaomojo import-history
