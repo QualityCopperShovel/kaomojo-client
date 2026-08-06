@@ -710,6 +710,7 @@ def systemd_quote(value):
 
 def configure_systemd_schedule(executable):
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     unit_dir = config_home / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     service = unit_dir / "kaomojo-collect.service"
@@ -720,6 +721,9 @@ def configure_systemd_schedule(executable):
         "Documentation=https://kaomojo.com/agent-guide\n\n"
         "[Service]\n"
         "Type=oneshot\n"
+        f"Environment={systemd_quote('HOME=' + str(Path.home()))}\n"
+        f"Environment={systemd_quote('XDG_CONFIG_HOME=' + str(config_home))}\n"
+        f"Environment={systemd_quote('XDG_STATE_HOME=' + str(state_home))}\n"
         f"ExecStart={systemd_quote(executable)} collect\n"
         "TimeoutStartSec=150\n",
         encoding="utf-8",
