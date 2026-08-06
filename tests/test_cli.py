@@ -21,7 +21,8 @@ from kaomojo_client.cli import (
     observations,
     observation_batches,
     post_batch,
-    post_import_batch,
+    print_rejections,
+    record_rejections,
     SubmissionError,
     parser,
     save_key,
@@ -277,34 +278,30 @@ class ClientTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "control characters"):
             post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "bad"}])
 
-    def test_history_submission_splits_failed_batch_and_quarantines_poison_item(self):
-        batch = [
-            {"idempotency_key": "good-one"},
-            {"idempotency_key": "poison"},
-            {"idempotency_key": "good-two"},
-        ]
+    def test_rejected_observations_are_summarized_by_reason(self):
+        from collections import Counter
+        reasons = Counter()
+        record_rejections(reasons, {"results": [
+            {"accepted": False, "reason": "No authentic kaomoji"},
+            {"accepted": True, "reason": "Authentic kaomoji"},
+            {"accepted": False, "reason": "No authentic kaomoji"},
+        ]})
+        with patch("builtins.print") as output:
+            print_rejections(reasons)
+        output.assert_any_call("  2 × No authentic kaomoji")
 
-        def submit(session, key, items, deadline_seconds=120):
-            if any(item["idempotency_key"] == "poison" for item in items):
-                raise SubmissionError(500, "catalog failure")
-            return {
-                "accepted": len(items), "rejected": 0,
-                "results": [{"idempotency_key": item["idempotency_key"], "accepted": True}
-                            for item in items],
-            }
-
-        with patch("kaomojo_client.cli.post_batch", side_effect=submit):
-            result = post_import_batch(object(), "ar_test", batch, 120)
-        self.assertEqual(result["accepted"], 2)
-        self.assertEqual(result["quarantined"][0]["idempotency_key"], "poison")
-
-    def test_history_submission_does_not_quarantine_transient_single_failure(self):
-        with patch(
-            "kaomojo_client.cli.post_batch",
-            side_effect=SubmissionError(503, "extractor unavailable"),
-        ):
-            with self.assertRaisesRegex(SubmissionError, "extractor unavailable"):
-                post_import_batch(object(), "ar_test", [{"idempotency_key": "one"}], 120)
+    def test_server_failure_remains_terminal_after_retries(self):
+        response = SimpleNamespace(
+            status_code=500,
+            ok=False,
+            json=lambda: {"error": {"message": "database unavailable"}},
+            text="",
+            headers={},
+        )
+        session = SimpleNamespace(post=lambda *args, **kwargs: response)
+        with patch("kaomojo_client.cli.time.sleep", return_value=None):
+            with self.assertRaisesRegex(SubmissionError, "database unavailable"):
+                post_batch(session, "ar_abcdefghijklmnopqrstuvwxyz", [{"message_start": "(._.)"}])
 
     def test_history_import_checkpoints_and_reruns_without_duplicates(self):
         with TemporaryDirectory() as directory:
