@@ -22,6 +22,8 @@ Paste the key at the hidden prompt. The client stores it privately, then marks e
 
 Setup also schedules collection every five minutes in the background, using systemd on most Linux distributions and a LaunchAgent on macOS. It keeps working after the terminal closes without leaving Kaomojo running continuously. Use `kaomojo schedule` to repair or refresh it. If neither scheduler is available, setup stops with a clear error; configure an equivalent scheduler, then rerun setup with `--no-schedule`.
 
+The scheduled collector checks for an approved client release at most once per day and updates automatically through `pipx`. The release manifest comes from kaomojo.com and pins an immutable commit in the official repository, so changing the GitHub default branch alone cannot distribute an update. Update checks and installations have fixed deadlines; a failure is recorded locally and printed as a warning without blocking collection.
+
 Start collecting:
 
 ```bash

@@ -19,6 +19,7 @@ from kaomojo_client.cli import (
     load_key,
     load_sent_ids,
     load_state,
+    maybe_auto_update,
     observations,
     observation_batches,
     post_batch,
@@ -32,6 +33,45 @@ from kaomojo_client.cli import (
 
 
 class ClientTest(unittest.TestCase):
+    def test_auto_update_installs_only_manifest_pinned_commit_and_verifies_version(self):
+        with TemporaryDirectory() as directory:
+            state = Path(directory) / "update.json"
+            response = SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "version": "4.9.0",
+                    "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
+                    "commit": "a" * 40,
+                },
+            )
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.9.0\n")]
+            with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
+                "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
+            ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:
+                self.assertTrue(maybe_auto_update(state))
+            request.assert_called_once_with(
+                "https://kaomojo.com/api/v1/client-release", timeout=10,
+            )
+            self.assertIn("@" + ("a" * 40), run.call_args_list[0].args[0][-1])
+            self.assertEqual(json.loads(state.read_text())["status"], "updated")
+
+    def test_auto_update_rejects_untrusted_repository_without_blocking(self):
+        with TemporaryDirectory() as directory:
+            state = Path(directory) / "update.json"
+            response = SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "version": "4.9.0", "repository": "https://evil.invalid/client.git",
+                    "commit": "a" * 40,
+                },
+            )
+            with patch("kaomojo_client.cli.requests.get", return_value=response), patch(
+                "kaomojo_client.cli.subprocess.run"
+            ) as run:
+                self.assertFalse(maybe_auto_update(state))
+            run.assert_not_called()
+            self.assertEqual(json.loads(state.read_text())["status"], "failed")
+
     def test_client_environment_is_coarse_and_excludes_device_identity(self):
         with patch("kaomojo_client.cli.platform.system", return_value="Darwin"), patch(
             "kaomojo_client.cli.platform.mac_ver", return_value=("15.2.0", ("", "", ""), "")

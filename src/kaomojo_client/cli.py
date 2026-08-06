@@ -12,6 +12,8 @@ import json
 import os
 import platform
 import plistlib
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -35,12 +37,76 @@ DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
 MAX_BATCH_ITEMS = 100
 TARGET_BATCH_BYTES = 24 * 1024
 MIN_REQUEST_SECONDS = 5
+UPDATE_MANIFEST_URL = "https://kaomojo.com/api/v1/client-release"
+UPDATE_REPOSITORY = "https://github.com/QualityCopperShovel/kaomojo-client.git"
+UPDATE_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_TIMEOUT_SECONDS = 180
 
 
 class SubmissionError(RuntimeError):
     def __init__(self, status_code, message):
         self.status_code = status_code
         super().__init__(message)
+
+
+def version_tuple(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
+        raise ValueError("Update manifest contains an invalid version")
+    return tuple(int(part) for part in value.split("."))
+
+
+def maybe_auto_update(state_path, now=None):
+    now = now or datetime.now(timezone.utc)
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            checked_at = datetime.fromisoformat(state["checked_at"])
+            if (now - checked_at).total_seconds() < UPDATE_INTERVAL_SECONDS:
+                return False
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    state = {"checked_at": now.isoformat(), "status": "checking", "error": None}
+    atomic_private_json(state_path, state)
+    try:
+        response = requests.get(UPDATE_MANIFEST_URL, timeout=10)
+        response.raise_for_status()
+        manifest = response.json()
+        if not isinstance(manifest, dict) or set(manifest) != {"version", "repository", "commit"}:
+            raise RuntimeError("Update manifest is malformed")
+        target_version = manifest["version"]
+        if manifest["repository"] != UPDATE_REPOSITORY:
+            raise RuntimeError("Update manifest repository is not trusted")
+        if not isinstance(manifest["commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", manifest["commit"]):
+            raise RuntimeError("Update manifest commit is invalid")
+        if version_tuple(target_version) <= version_tuple(__version__):
+            state["status"] = "current"
+            atomic_private_json(state_path, state)
+            return False
+        pipx = shutil.which("pipx")
+        if not pipx:
+            raise RuntimeError("pipx is unavailable; cannot install the approved update")
+        source = f"git+{UPDATE_REPOSITORY}@{manifest['commit']}"
+        subprocess.run(
+            [pipx, "install", "--force", "--pip-args=--no-cache-dir", source],
+            check=True, capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SECONDS,
+        )
+        executable = shutil.which("kaomojo")
+        if not executable:
+            raise RuntimeError("Updated Kaomojo executable is unavailable")
+        verified = subprocess.run(
+            [executable, "--version"], check=True, capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+        if verified != f"kaomojo {target_version}":
+            raise RuntimeError(f"Updated client failed version verification: {verified}")
+        state.update({"status": "updated", "installed_version": target_version})
+        atomic_private_json(state_path, state)
+        print(f"Updated Kaomojo client to {target_version}")
+        return True
+    except (OSError, ValueError, RuntimeError, requests.RequestException, subprocess.SubprocessError) as error:
+        state.update({"status": "failed", "error": str(error)})
+        atomic_private_json(state_path, state)
+        print(f"Warning: automatic update failed: {error}", file=sys.stderr)
+        return False
 
 
 def client_environment(batch):
@@ -401,6 +467,7 @@ def collect_locked(args):
         raise ValueError("--context must be at most 200 characters")
     if not args.state.exists():
         raise RuntimeError("Run `kaomojo setup` first")
+    maybe_auto_update(args.state.parent / "update.json")
     sent_ids, initialized_sources = load_state(args.state)
     newly_initialized = baseline_new_sources(args, sent_ids, initialized_sources)
     for source, count in newly_initialized.items():
@@ -640,6 +707,7 @@ def configure_schedule(args):
 
 def parser():
     root = argparse.ArgumentParser(prog="kaomojo")
+    root.add_argument("--version", action="version", version=f"kaomojo {__version__}")
     root.add_argument("--credentials", type=Path, default=DEFAULT_CONFIG / "credentials.json")
     commands = root.add_subparsers(dest="command", required=True)
     setup_parser = commands.add_parser("setup", help="Save your API key with user-only permissions")
