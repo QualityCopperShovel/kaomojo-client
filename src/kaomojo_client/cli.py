@@ -421,6 +421,19 @@ def print_rejections(reasons):
         print(f"  {count} × {reason}")
 
 
+def record_warnings(warnings, result):
+    warnings.update(
+        warning
+        for item in result["results"]
+        for warning in item.get("warnings", [])
+    )
+
+
+def print_warnings(warnings):
+    if warnings.get("model_not_recorded"):
+        print(f"Warning: {warnings['model_not_recorded']} observations had no model recorded")
+
+
 def observation_batches(observations):
     """Pack API batches near the service limit without crossing its body cap."""
     batch = []
@@ -478,16 +491,19 @@ def collect_locked(args):
     api_key = load_key(args.credentials)
     accepted = rejected = 0
     rejection_reasons = Counter()
+    warnings = Counter()
     with requests.Session() as session:
         for batch in observation_batches(pending):
             result = post_batch(session, api_key, batch)
             accepted += result["accepted"]
             rejected += result["rejected"]
             record_rejections(rejection_reasons, result)
+            record_warnings(warnings, result)
             sent_ids.update(item["idempotency_key"] for item in batch)
             save_state(args.state, sent_ids, initialized_sources)
     print(f"Complete: {accepted} accepted, {rejected} rejected, {len(pending)} processed")
     print_rejections(rejection_reasons)
+    print_warnings(warnings)
 
 
 def new_import_state():
@@ -554,6 +570,7 @@ def import_history_locked(args):
     print(f"History import: {len(processed_ids)} already processed, {len(pending)} remaining")
     accepted = rejected = 0
     rejection_reasons = Counter()
+    warnings = Counter()
     try:
         with requests.Session() as session:
             for batch in observation_batches(pending):
@@ -572,6 +589,7 @@ def import_history_locked(args):
                 accepted += result["accepted"]
                 rejected += result["rejected"]
                 record_rejections(rejection_reasons, result)
+                record_warnings(warnings, result)
                 state["processed_ids"].extend(item["idempotency_key"] for item in batch)
                 save_import_state(args.import_state, state, "running", total)
                 print(
@@ -591,6 +609,7 @@ def import_history_locked(args):
     save_import_state(args.import_state, state, "completed", total)
     print(f"History import complete: {accepted} accepted, {rejected} rejected this run")
     print_rejections(rejection_reasons)
+    print_warnings(warnings)
 
 
 def setup(args):

@@ -44,6 +44,8 @@ Every `kaomojo collect` run submits only sightings created after setup. By defau
 
 For compatibility debugging, each request also reports the Kaomojo client version, OS family and major version, CPU architecture, Python major/minor version, and harnesses represented in that request. It never sends a hostname, username, device identifier, path, location, or installed-package list. The server retains only the latest environment for each account.
 
+Sightings without model provenance are still accepted. The API returns a structured `model_not_recorded` warning for each affected observation, and the client summarizes those warnings after collection.
+
 ## Import earlier sightings
 
 Setup starts fresh by default. To scan conversations that existed before setup, run:

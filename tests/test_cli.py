@@ -25,6 +25,8 @@ from kaomojo_client.cli import (
     post_batch,
     print_rejections,
     record_rejections,
+    record_warnings,
+    print_warnings,
     SubmissionError,
     parser,
     save_key,
@@ -345,6 +347,17 @@ class ClientTest(unittest.TestCase):
         with patch("builtins.print") as output:
             print_rejections(reasons)
         output.assert_any_call("  2 × No authentic kaomoji")
+
+    def test_missing_model_warnings_are_summarized(self):
+        from collections import Counter
+        warnings = Counter()
+        record_warnings(warnings, {"results": [
+            {"accepted": True, "warnings": ["model_not_recorded"]},
+            {"accepted": True, "warnings": ["model_not_recorded"]},
+        ]})
+        with patch("builtins.print") as output:
+            print_warnings(warnings)
+        output.assert_called_once_with("Warning: 2 observations had no model recorded")
 
     def test_server_failure_remains_terminal_after_retries(self):
         response = SimpleNamespace(
