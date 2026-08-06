@@ -13,6 +13,7 @@ from kaomojo_client.cli import (
     baseline_new_sources,
     configure_launchd_schedule,
     configure_systemd_schedule,
+    configure_windows_schedule,
     client_lock,
     client_environment,
     import_history,
@@ -41,12 +42,12 @@ class ClientTest(unittest.TestCase):
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.9.0",
+                    "version": "4.10.0",
                     "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
                     "commit": "a" * 40,
                 },
             )
-            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.9.0\n")]
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.10.0\n")]
             with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
                 "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
             ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:
@@ -63,7 +64,7 @@ class ClientTest(unittest.TestCase):
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.9.0", "repository": "https://evil.invalid/client.git",
+                    "version": "4.10.0", "repository": "https://evil.invalid/client.git",
                     "commit": "a" * 40,
                 },
             )
@@ -275,6 +276,20 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(payload["ProgramArguments"], ["/opt/kaomojo/bin/kaomojo", "collect"])
             self.assertEqual(run.call_count, 2)
             self.assertEqual(run.call_args.args[0][0:2], ["launchctl", "bootstrap"])
+
+    def test_windows_schedule_runs_every_five_minutes_and_is_verified(self):
+        executable = Path("C:/Program Files/Kaomojo/kaomojo.exe")
+        with patch("kaomojo_client.cli.run_scheduler_command") as run:
+            configure_windows_schedule(executable)
+        self.assertEqual(run.call_count, 2)
+        create = run.call_args_list[0].args[0]
+        self.assertEqual(create[:4], ["schtasks.exe", "/Create", "/TN", "Kaomojo Collect"])
+        self.assertEqual(create[create.index("/SC") + 1:create.index("/F")], ["MINUTE", "/MO", "5"])
+        self.assertIn('"C:/Program Files/Kaomojo/kaomojo.exe" collect', create)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["schtasks.exe", "/Query", "/TN", "Kaomojo Collect", "/FO", "LIST"],
+        )
 
     def test_upgrade_baselines_claude_without_replaying_history(self):
         with TemporaryDirectory() as directory:

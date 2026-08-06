@@ -33,6 +33,7 @@ DEFAULT_CLAUDE_PROJECTS = Path(
 ) / "projects"
 COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
+WINDOWS_TASK_NAME = "Kaomojo Collect"
 DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
 MAX_BATCH_ITEMS = 100
 TARGET_BATCH_BYTES = 24 * 1024
@@ -711,12 +712,26 @@ def configure_launchd_schedule(executable):
     print(f"Scheduled collection every five minutes with {plist}")
 
 
+def configure_windows_schedule(executable):
+    task_command = subprocess.list2cmdline([str(executable), "collect"])
+    run_scheduler_command([
+        "schtasks.exe", "/Create", "/TN", WINDOWS_TASK_NAME,
+        "/TR", task_command, "/SC", "MINUTE", "/MO", "5", "/F",
+    ])
+    run_scheduler_command([
+        "schtasks.exe", "/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST",
+    ])
+    print(f"Scheduled collection every five minutes with Windows Task Scheduler ({WINDOWS_TASK_NAME})")
+
+
 def configure_schedule(args):
     executable = Path(sys.argv[0]).resolve()
     if sys.platform.startswith("linux"):
         configure_systemd_schedule(executable)
     elif sys.platform == "darwin":
         configure_launchd_schedule(executable)
+    elif sys.platform == "win32":
+        configure_windows_schedule(executable)
     else:
         raise RuntimeError(
             f"Automatic recurring collection is not supported on {sys.platform}; "
