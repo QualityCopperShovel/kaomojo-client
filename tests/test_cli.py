@@ -287,7 +287,11 @@ class ClientTest(unittest.TestCase):
             self.assertIn("TimeoutStartSec=150", service)
             self.assertIn("OnCalendar=*:0/5", timer)
             self.assertIn("AccuracySec=15s", timer)
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_args_list[0].args[0][0:3], [
+                "systemctl", "--user", "link",
+            ])
+            self.assertFalse(run.call_args_list[0].kwargs["check"])
             self.assertEqual(
                 run.call_args_list[-1].args[0],
                 ["systemctl", "--user", "enable", "--now", "kaomojo-collect.timer"],

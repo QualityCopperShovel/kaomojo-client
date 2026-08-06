@@ -740,6 +740,11 @@ def configure_systemd_schedule(executable):
     scheduler_env = os.environ.copy()
     scheduler_env["XDG_CONFIG_HOME"] = str(config_home)
     run_scheduler_command(
+        ["systemctl", "--user", "link", str(service), str(timer)],
+        check=False,
+        env=scheduler_env,
+    )
+    run_scheduler_command(
         ["systemctl", "--user", "daemon-reload"], env=scheduler_env,
     )
     run_scheduler_command(
