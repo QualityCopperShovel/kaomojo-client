@@ -14,6 +14,7 @@ from kaomojo_client.cli import (
     configure_launchd_schedule,
     configure_systemd_schedule,
     client_lock,
+    client_environment,
     import_history,
     load_key,
     load_sent_ids,
@@ -31,6 +32,21 @@ from kaomojo_client.cli import (
 
 
 class ClientTest(unittest.TestCase):
+    def test_client_environment_is_coarse_and_excludes_device_identity(self):
+        with patch("kaomojo_client.cli.platform.system", return_value="Darwin"), patch(
+            "kaomojo_client.cli.platform.mac_ver", return_value=("15.2.0", ("", "", ""), "")
+        ), patch("kaomojo_client.cli.platform.machine", return_value="arm64"):
+            environment = client_environment([
+                {"harness": "codex"}, {"harness": "claude_code"}, {"harness": "codex"},
+            ])
+        self.assertEqual(environment["os_family"], "macOS")
+        self.assertEqual(environment["os_major"], "15")
+        self.assertEqual(environment["harnesses"], ["claude_code", "codex"])
+        self.assertEqual(set(environment), {
+            "client_name", "client_version", "os_family", "os_major",
+            "architecture", "python_version", "harnesses",
+        })
+
     def test_observation_batches_honor_item_and_body_limits(self):
         observations = [
             {

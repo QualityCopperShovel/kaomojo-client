@@ -10,6 +10,7 @@ import getpass
 import hashlib
 import json
 import os
+import platform
 import plistlib
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import unicodedata
 
 import requests
 from platformdirs import user_config_path, user_state_path
+from . import __version__
 
 
 API_URL = "https://kaomojo.com/api/v1/kaomojis"
@@ -39,6 +41,27 @@ class SubmissionError(RuntimeError):
     def __init__(self, status_code, message):
         self.status_code = status_code
         super().__init__(message)
+
+
+def client_environment(batch):
+    system = platform.system()
+    os_family = "macOS" if system == "Darwin" else (system or "Unknown")
+    if system == "Darwin":
+        version = platform.mac_ver()[0] or platform.release()
+    else:
+        version = platform.release()
+    return {
+        "client_name": "kaomojo-client",
+        "client_version": __version__,
+        "os_family": os_family,
+        "os_major": version.split(".", 1)[0] or "Unknown",
+        "architecture": platform.machine() or "Unknown",
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "harnesses": sorted({
+            item["harness"] for item in batch
+            if isinstance(item.get("harness"), str) and item["harness"]
+        }),
+    }
 
 
 def content_text(content, allowed_types=None):
@@ -257,7 +280,10 @@ def post_batch(session, api_key, batch, deadline_seconds=120):
             response = session.post(
                 API_URL,
                 headers={"X-API-Key": api_key},
-                json={"observations": batch},
+                json={
+                    "observations": batch,
+                    "client_environment": client_environment(batch),
+                },
                 timeout=min(100, remaining),
             )
         except requests.RequestException:

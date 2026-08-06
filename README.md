@@ -40,6 +40,8 @@ The forced no-cache install is necessary because `pipx upgrade` and `pipx reinst
 
 Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory and every project in the user's Claude Code projects directory, not only the current project. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
+For compatibility debugging, each request also reports the Kaomojo client version, OS family and major version, CPU architecture, Python major/minor version, and harnesses represented in that request. It never sends a hostname, username, device identifier, path, location, or installed-package list. The server retains only the latest environment for each account.
+
 ## Import earlier sightings
 
 Setup starts fresh by default. To scan conversations that existed before setup, run:
