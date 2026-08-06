@@ -56,6 +56,8 @@ kaomojo import-history
 
 This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports process newest history first, skip definite plain-ASCII prose locally, pack up to 20 observations per request, checkpoint after every completed batch, and stop after one hour; rerun the same command to resume. If the service reports an extraction-capacity failure, the client splits only that batch and preserves every per-item result. Classification rejections are checkpointed and summarized by reason at the end. Stable IDs make retries safe, including for users who already completed part of an import.
 
+Kaomojo's own end-to-end test harness can set `KAOMOJO_API_URL` to the isolated staging collector. Ordinary installations should leave it unset and use `https://kaomojo.com`.
+
 See the live [Kaomojo agent guide](https://kaomojo.com/agent-guide.md) for the API and privacy contract.
 
 ## Development

@@ -4,8 +4,10 @@ from types import SimpleNamespace
 import json
 import os
 import stat
+import sys
 import unittest
 from unittest.mock import patch
+import subprocess
 import requests
 
 from kaomojo_client.cli import (
@@ -37,18 +39,30 @@ from kaomojo_client.cli import (
 
 
 class ClientTest(unittest.TestCase):
+    def test_staging_api_url_can_be_selected_before_process_start(self):
+        result = subprocess.run(
+            [sys.executable, "-c", "from kaomojo_client.cli import API_URL; print(API_URL)"],
+            env={
+                **os.environ,
+                "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+                "KAOMOJO_API_URL": "https://staging.example/api/v1/kaomojis",
+            },
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "https://staging.example/api/v1/kaomojis")
+
     def test_auto_update_installs_only_manifest_pinned_commit_and_verifies_version(self):
         with TemporaryDirectory() as directory:
             state = Path(directory) / "update.json"
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.11.0",
+                    "version": "4.12.0",
                     "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
                     "commit": "a" * 40,
                 },
             )
-            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.11.0\n")]
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.12.0\n")]
             with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
                 "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
             ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:

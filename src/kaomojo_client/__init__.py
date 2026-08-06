@@ -1,3 +1,3 @@
 """Kaomojo client."""
 
-__version__ = "4.10.4"
+__version__ = "4.11.0"
