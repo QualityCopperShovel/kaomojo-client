@@ -527,6 +527,38 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(saved["status"], "timed_out")
             self.assertEqual(saved["processed_ids"], [])
 
+    def test_history_import_progress_includes_locally_filtered_records(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            (sessions / "session.jsonl").write_text(json.dumps({
+                "type": "response_item",
+                "timestamp": "2026-08-01T00:00:00Z",
+                "payload": {
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Completed the operation."}],
+                },
+            }), encoding="utf-8")
+            credentials = root / "credentials.json"
+            save_key(credentials, "ar_abcdefghijklmnopqrstuvwxyz")
+            state = root / "state.json"
+            state.write_text(json.dumps({
+                "version": 2, "sent_ids": [], "initialized_sources": ["codex"],
+            }), encoding="utf-8")
+            args = SimpleNamespace(
+                codex_sessions=sessions, claude_projects=root / "missing-claude",
+                state=state, credentials=credentials,
+                import_state=root / "history-import.json",
+                lock=root / "client.lock", deadline=120,
+            )
+            with patch("kaomojo_client.cli.post_batch") as post:
+                import_history(args)
+            saved = json.loads(args.import_state.read_text(encoding="utf-8"))
+            self.assertEqual(saved["total"], 1)
+            self.assertEqual(len(saved["processed_ids"]), 1)
+            post.assert_not_called()
+
     def test_client_lock_rejects_duplicate_operation(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "client.lock"

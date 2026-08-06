@@ -621,9 +621,14 @@ def import_history_locked(args):
     filtered = [item for item in pending if not may_contain_kaomoji(item["message_start"])]
     pending = [item for item in pending if may_contain_kaomoji(item["message_start"])]
     state["processed_ids"].extend(item["idempotency_key"] for item in filtered)
-    total = len(processed_ids) + len(pending)
+    total = len(processed_ids) + len(filtered) + len(pending)
     save_import_state(args.import_state, state, "running", total)
-    print(f"History import: {len(processed_ids)} already processed, {len(pending)} remaining")
+    print(
+        f"History import: {len(processed_ids)} already processed, "
+        f"{len(filtered) + len(pending)} remaining "
+        f"({len(filtered)} plain-text prefixes skipped locally, "
+        f"{len(pending)} submission candidates)"
+    )
     accepted = rejected = 0
     rejection_reasons = Counter()
     warnings = Counter()
