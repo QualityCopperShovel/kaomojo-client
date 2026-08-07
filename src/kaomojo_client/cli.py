@@ -38,6 +38,9 @@ DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
 MAX_BATCH_ITEMS = 20
 TARGET_BATCH_BYTES = 24 * 1024
 MIN_REQUEST_SECONDS = 5
+# Kaomojo accepts at most this many characters per excerpt, and two excerpts
+# per observation: the opening one and the non-overlapping closing one.
+EXCERPT_LIMIT = 30
 UPDATE_MANIFEST_URL = "https://kaomojo.com/api/v1/client-release"
 UPDATE_REPOSITORY = "https://github.com/QualityCopperShovel/kaomojo-client.git"
 UPDATE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -57,13 +60,26 @@ ASCII_FACE_PATTERN = re.compile(
 )
 
 
-def may_contain_kaomoji(message_start):
+def excerpt_may_contain_kaomoji(excerpt):
     """Reject only plain ASCII prose that cannot contain a text face."""
-    if any(ord(character) > 127 for character in message_start):
+    if any(ord(character) > 127 for character in excerpt):
         return True
-    if ASCII_FACE_PATTERN.search(message_start):
+    if ASCII_FACE_PATTERN.search(excerpt):
         return True
-    return any(character in message_start for character in "()[]{}<>\\/^_|~`")
+    return any(character in excerpt for character in "()[]{}<>\\/^_|~`")
+
+
+def may_contain_kaomoji(observation):
+    """True when either submitted excerpt could hold a face.
+
+    Both ends are checked: agents open with a kaomoji when instructed to, but
+    some sign off with one instead, and a start-only test drops those.
+    """
+    return any(
+        excerpt_may_contain_kaomoji(observation[field])
+        for field in ("message_start", "message_end")
+        if observation.get(field)
+    )
 
 
 def version_tuple(value):
@@ -147,48 +163,55 @@ def client_environment(batch):
     }
 
 
-def message_prefix(text):
-    """Return the first 30 characters with control characters made API-safe."""
+def sanitize_excerpt(text):
+    """Make an excerpt API-safe: no control characters, no surrounding space."""
     return "".join(
         " " if unicodedata.category(character).startswith("C") else character
-        for character in text[:30]
+        for character in text
     ).strip()
+
+
+def message_excerpts(text):
+    """The opening and closing 30-character excerpts of a message.
+
+    The tail is taken from what remains after the opening excerpt, so the two
+    never overlap and a message shorter than 60 characters is never sent
+    twice. The tail is None when the whole message fits in the opening
+    excerpt, or when it holds nothing but whitespace.
+    """
+    return sanitize_excerpt(text[:EXCERPT_LIMIT]), (
+        sanitize_excerpt(text[EXCERPT_LIMIT:][-EXCERPT_LIMIT:]) or None
+    )
+
+
+def build_observation(event, context=None):
+    start, end = message_excerpts(event["text"])
+    item = {
+        "idempotency_key": event["local_event_id"],
+        "message_start": start,
+        "harness": event["harness"],
+        "observed_at": event["timestamp"],
+        "conversation_hash": event["conversation_hash"],
+    }
+    if end:
+        item["message_end"] = end
+    if event["model"]:
+        item["model"] = event["model"]
+    if context:
+        item["context"] = context
+    return item
 
 
 def observations(session_dir, sent_ids, context=None):
     for event in codex_assistant_events(session_dir):
-        if event["local_event_id"] in sent_ids:
-            continue
-        item = {
-            "idempotency_key": event["local_event_id"],
-            "message_start": message_prefix(event["text"]),
-            "harness": event["harness"],
-            "observed_at": event["timestamp"],
-            "conversation_hash": event["conversation_hash"],
-        }
-        if event["model"]:
-            item["model"] = event["model"]
-        if context:
-            item["context"] = context
-        yield item
+        if event["local_event_id"] not in sent_ids:
+            yield build_observation(event, context)
 
 
 def claude_observations(projects_dir, sent_ids, context=None):
     for event in claude_assistant_events(projects_dir):
-        if event["local_event_id"] in sent_ids:
-            continue
-        item = {
-            "idempotency_key": event["local_event_id"],
-            "message_start": message_prefix(event["text"]),
-            "harness": event["harness"],
-            "observed_at": event["timestamp"],
-            "conversation_hash": event["conversation_hash"],
-        }
-        if event["model"]:
-            item["model"] = event["model"]
-        if context:
-            item["context"] = context
-        yield item
+        if event["local_event_id"] not in sent_ids:
+            yield build_observation(event, context)
 
 
 def source_readers(codex_sessions, claude_projects, sent_ids, context=None):
@@ -467,8 +490,8 @@ def collect_locked(args):
     pending = list(all_observations(
         args.codex_sessions, args.claude_projects, sent_ids, args.context,
     ))
-    filtered = [item for item in pending if not may_contain_kaomoji(item["message_start"])]
-    pending = [item for item in pending if may_contain_kaomoji(item["message_start"])]
+    filtered = [item for item in pending if not may_contain_kaomoji(item)]
+    pending = [item for item in pending if may_contain_kaomoji(item)]
     if filtered:
         sent_ids.update(item["idempotency_key"] for item in filtered)
         save_state(args.state, sent_ids, initialized_sources)
@@ -552,8 +575,8 @@ def import_history_locked(args):
         args.codex_sessions, args.claude_projects, processed_ids,
     ))
     pending.sort(key=lambda item: item["observed_at"], reverse=True)
-    filtered = [item for item in pending if not may_contain_kaomoji(item["message_start"])]
-    pending = [item for item in pending if may_contain_kaomoji(item["message_start"])]
+    filtered = [item for item in pending if not may_contain_kaomoji(item)]
+    pending = [item for item in pending if may_contain_kaomoji(item)]
     state["processed_ids"].extend(item["idempotency_key"] for item in filtered)
     total = len(processed_ids) + len(filtered) + len(pending)
     save_import_state(args.import_state, state, "running", total)

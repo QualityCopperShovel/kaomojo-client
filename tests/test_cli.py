@@ -57,12 +57,12 @@ class ClientTest(unittest.TestCase):
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.13.0",
+                    "version": "4.14.0",
                     "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
                     "commit": "a" * 40,
                 },
             )
-            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.13.0\n")]
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.14.0\n")]
             with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
                 "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
             ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:
@@ -125,9 +125,20 @@ class ClientTest(unittest.TestCase):
         ))
 
     def test_plain_text_prefilter_is_conservative(self):
-        self.assertFalse(may_contain_kaomoji("Finished updating the tests."))
+        self.assertFalse(may_contain_kaomoji({"message_start": "Finished updating the tests."}))
         for value in ("(＾▽＾) Done", "hello :)", "Done — (._.)", "XD"):
-            self.assertTrue(may_contain_kaomoji(value), value)
+            self.assertTrue(may_contain_kaomoji({"message_start": value}), value)
+
+    def test_prefilter_keeps_messages_whose_face_is_only_at_the_end(self):
+        trailing = {
+            "message_start": "Finished updating the tests",
+            "message_end": "and they all pass now (＾▽＾)",
+        }
+        self.assertTrue(may_contain_kaomoji(trailing))
+        self.assertFalse(may_contain_kaomoji({
+            "message_start": "Finished updating the tests",
+            "message_end": "and they all pass now.",
+        }))
 
     def test_capacity_failure_is_split_without_reposting_successes(self):
         success = lambda items: SimpleNamespace(
@@ -188,6 +199,10 @@ class ClientTest(unittest.TestCase):
             )
             result = list(observations(sessions, set()))
             self.assertEqual(result[0]["message_start"], "(＾▽＾) Finished.")
+            self.assertNotIn(
+                "message_end", result[0],
+                "a message inside one excerpt must never be transmitted twice",
+            )
             self.assertIn("idempotency_key", result[0])
             self.assertNotIn("id", result[0])
             self.assertEqual(result[0]["model"], "gpt-test")
@@ -210,6 +225,8 @@ class ClientTest(unittest.TestCase):
             result = list(observations(sessions, set()))
             self.assertEqual(result[0]["message_start"], text[:30])
             self.assertEqual(len(result[0]["message_start"]), 30)
+            self.assertEqual(result[0]["message_end"], text[30:][-30:])
+            self.assertEqual(len(result[0]["message_end"]), 30)
 
     def test_observation_prefix_replaces_control_characters(self):
         with TemporaryDirectory() as directory:
@@ -226,6 +243,18 @@ class ClientTest(unittest.TestCase):
             (sessions / "session.jsonl").write_text(json.dumps(record), encoding="utf-8")
             result = list(observations(sessions, set()))
         self.assertEqual(result[0]["message_start"], "(•‿•) First line second line")
+
+    def test_trailing_excerpt_never_overlaps_the_opening_one(self):
+        from kaomojo_client.cli import message_excerpts
+
+        self.assertEqual(message_excerpts("(•‿•) short"), ("(•‿•) short", None))
+        start, end = message_excerpts("a" * 30 + "b" * 15)
+        self.assertEqual(start, "a" * 30)
+        self.assertEqual(end, "b" * 15)
+        self.assertEqual(len(start) + len(end), 45)
+        start, end = message_excerpts("a" * 30 + "b" * 40 + "c" * 30)
+        self.assertEqual(end, "c" * 30)
+        self.assertEqual(len(start) + len(end), 60)
 
     def test_claude_observation_contains_prefix_source_model_and_hash(self):
         with TemporaryDirectory() as directory:

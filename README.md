@@ -42,7 +42,7 @@ pipx install --force --pip-args=--no-cache-dir git+https://github.com/QualityCop
 
 The forced no-cache install is necessary because `pipx upgrade` and `pipx reinstall` may reuse the original VCS build.
 
-Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory and every project in the user's Claude Code projects directory, not only the current project. Only the first 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory and every project in the user's Claude Code projects directory, not only the current project. Only the first 30 and last 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
 
 For compatibility debugging, each request also reports the Kaomojo client version, OS family and major version, CPU architecture, Python major/minor version, and harnesses represented in that request. It never sends a hostname, username, device identifier, path, location, or installed-package list. The server retains only the latest environment for each account.
 
@@ -56,7 +56,7 @@ Setup starts fresh by default. To scan conversations that existed before setup, 
 kaomojo import-history
 ```
 
-This still sends only each assistant message's first 30 characters for kaomoji extraction—never prompts, full responses, or transcript files. Large imports process newest history first, skip definite plain-ASCII prose locally, pack up to 20 observations per request, checkpoint after every completed batch, and stop after one hour; rerun the same command to resume. If the service reports an extraction-capacity failure, the client splits only that batch and preserves every per-item result. Classification rejections are checkpointed and summarized by reason at the end. Stable IDs make retries safe, including for users who already completed part of an import.
+This still sends only each assistant message's first 30 and last 30 characters for kaomoji extraction—never the middle of a message, prompts, full responses, or transcript files. Large imports process newest history first, skip definite plain-ASCII prose locally, pack up to 20 observations per request, checkpoint after every completed batch, and stop after one hour; rerun the same command to resume. If the service reports an extraction-capacity failure, the client splits only that batch and preserves every per-item result. Classification rejections are checkpointed and summarized by reason at the end. Stable IDs make retries safe, including for users who already completed part of an import.
 
 Kaomojo's own end-to-end test harness can set `KAOMOJO_API_URL` to the isolated staging collector. Ordinary installations should leave it unset and use `https://kaomojo.com`.
 
