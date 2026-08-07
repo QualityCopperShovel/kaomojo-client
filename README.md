@@ -1,5 +1,7 @@
 # Kaomojo Client
 
+Codex and Claude Code session parsing is provided by the shared, local-only, MIT-licensed `coding-agent-sessions` package. Kaomojo retains its own API key, payload projection, checkpoints, and product identity.
+
 The default client for collecting kaomoji sightings from local Codex and Claude Code sessions and submitting them to [Kaomojo](https://kaomojo.com).
 
 ## Install

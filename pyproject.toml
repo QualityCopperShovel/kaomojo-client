@@ -4,12 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kaomojo-client"
-version = "4.11.0"
+version = "4.12.0"
 description = "Collect kaomoji sightings from local Codex and Claude Code sessions"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-dependencies = ["platformdirs>=4,<5", "requests>=2.31,<3"]
+dependencies = [
+  "platformdirs>=4,<5",
+  "requests>=2.31,<3",
+  "coding-agent-sessions @ https://agent-telemetry.aisloppy.com/downloads/coding_agent_sessions-0.1.0.tar.gz#sha256=5b971b3742b8f0fe6ef5e3bacfff76fa469b5ce1cf7b2b7b7a5e782e2a65d257",
+]
 
 [project.scripts]
 kaomojo = "kaomojo_client.cli:main"

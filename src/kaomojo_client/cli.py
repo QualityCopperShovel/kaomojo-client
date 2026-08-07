@@ -7,7 +7,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import getpass
-import hashlib
 import json
 import os
 import platform
@@ -20,6 +19,7 @@ import time
 import unicodedata
 
 import requests
+from coding_agent_sessions import claude_assistant_events, codex_assistant_events
 from platformdirs import user_config_path, user_state_path
 from . import __version__
 
@@ -147,24 +147,6 @@ def client_environment(batch):
     }
 
 
-def content_text(content, allowed_types=None):
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(
-        item.get("text", "")
-        for item in content
-        if (
-            isinstance(item, dict)
-            and isinstance(item.get("text"), str)
-            and (allowed_types is None or item.get("type") in allowed_types)
-        )
-    ).strip()
-
-
-def normalized_model(value):
-    return value.strip() if isinstance(value, str) and value.strip() != "<synthetic>" else None
-
-
 def message_prefix(text):
     """Return the first 30 characters with control characters made API-safe."""
     return "".join(
@@ -174,87 +156,39 @@ def message_prefix(text):
 
 
 def observations(session_dir, sent_ids, context=None):
-    for path in sorted(session_dir.rglob("*.jsonl")):
-        current_model = None
-        snapshot = path.read_bytes()
-        conversation_hash = f"sha256:{hashlib.sha256(snapshot).hexdigest()}"
-        for line in snapshot.decode("utf-8").splitlines():
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            payload = record.get("payload")
-            if record.get("type") == "turn_context" and isinstance(payload, dict):
-                current_model = normalized_model(payload.get("model")) or current_model
-                continue
-            if record.get("type") == "world_state" and isinstance(payload, dict):
-                state = payload.get("state")
-                if isinstance(state, dict):
-                    current_model = normalized_model(state.get("model")) or current_model
-                continue
-            if record.get("type") != "response_item" or not isinstance(payload, dict):
-                continue
-            if payload.get("type") != "message" or payload.get("role") != "assistant":
-                continue
-            text = content_text(payload.get("content"))
-            timestamp = record.get("timestamp")
-            if not text or not isinstance(timestamp, str):
-                continue
-            observation_id = hashlib.sha256(
-                f"{path}:{timestamp}:{text}".encode("utf-8")
-            ).hexdigest()[:32]
-            if observation_id in sent_ids:
-                continue
-            item = {
-                "idempotency_key": observation_id,
-                "message_start": message_prefix(text),
-                "harness": "codex",
-                "observed_at": timestamp,
-                "conversation_hash": conversation_hash,
-            }
-            if current_model:
-                item["model"] = current_model
-            if context:
-                item["context"] = context
-            yield item
+    for event in codex_assistant_events(session_dir):
+        if event["local_event_id"] in sent_ids:
+            continue
+        item = {
+            "idempotency_key": event["local_event_id"],
+            "message_start": message_prefix(event["text"]),
+            "harness": event["harness"],
+            "observed_at": event["timestamp"],
+            "conversation_hash": event["conversation_hash"],
+        }
+        if event["model"]:
+            item["model"] = event["model"]
+        if context:
+            item["context"] = context
+        yield item
 
 
 def claude_observations(projects_dir, sent_ids, context=None):
-    for path in sorted(projects_dir.rglob("*.jsonl")):
-        snapshot = path.read_bytes()
-        conversation_hash = f"sha256:{hashlib.sha256(snapshot).hexdigest()}"
-        for line in snapshot.decode("utf-8").splitlines():
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("type") != "assistant":
-                continue
-            message = record.get("message")
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            text = content_text(message.get("content"), {"text"})
-            timestamp = record.get("timestamp")
-            if not text or not isinstance(timestamp, str):
-                continue
-            observation_id = hashlib.sha256(
-                f'{path}:{record.get("uuid", "")}:{timestamp}:{text}'.encode("utf-8")
-            ).hexdigest()[:32]
-            if observation_id in sent_ids:
-                continue
-            item = {
-                "idempotency_key": observation_id,
-                "message_start": message_prefix(text),
-                "harness": "claude_code",
-                "observed_at": timestamp,
-                "conversation_hash": conversation_hash,
-            }
-            model = normalized_model(message.get("model"))
-            if model:
-                item["model"] = model
-            if context:
-                item["context"] = context
-            yield item
+    for event in claude_assistant_events(projects_dir):
+        if event["local_event_id"] in sent_ids:
+            continue
+        item = {
+            "idempotency_key": event["local_event_id"],
+            "message_start": message_prefix(event["text"]),
+            "harness": event["harness"],
+            "observed_at": event["timestamp"],
+            "conversation_hash": event["conversation_hash"],
+        }
+        if event["model"]:
+            item["model"] = event["model"]
+        if context:
+            item["context"] = context
+        yield item
 
 
 def source_readers(codex_sessions, claude_projects, sent_ids, context=None):
