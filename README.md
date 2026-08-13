@@ -4,7 +4,7 @@ Codex and Claude Code session parsing is provided by the shared, local-only, MIT
 
 The default client for collecting kaomoji sightings from local Codex, Claude Code, and Hermes sessions and submitting them to [Kaomojo](https://kaomojo.com).
 
-Hermes support is preliminary. It is covered by automated tests against a real Hermes 0.19.0 session database, but has not yet been validated by a human Hermes user.
+Hermes support was added August 13, 2026 and is preliminary. It is covered by automated tests against a real Hermes 0.19.0 session database, but has not yet been validated by a human Hermes user.
 
 ## Install
 
