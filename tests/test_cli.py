@@ -14,6 +14,8 @@ import requests
 from kaomojo_client.cli import (
     claude_observations,
     hermes_observations,
+    gemini_observations,
+    pi_observations,
     baseline_new_sources,
     configure_launchd_schedule,
     configure_systemd_schedule,
@@ -59,12 +61,12 @@ class ClientTest(unittest.TestCase):
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.15.0",
+                    "version": "4.16.0",
                     "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
                     "commit": "a" * 40,
                 },
             )
-            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.15.0\n")]
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.16.0\n")]
             with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
                 "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
             ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:
@@ -170,7 +172,66 @@ class ClientTest(unittest.TestCase):
 
     def test_help_names_both_supported_agents(self):
         help_text = parser().format_help()
-        self.assertIn("Codex, Claude Code, and Hermes sessions", " ".join(help_text.split()))
+        self.assertIn("Codex, Claude Code, Hermes, Gemini CLI, and Pi sessions", " ".join(help_text.split()))
+
+    def test_gemini_uses_current_history_after_rewind(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory) / "project" / "chats"
+            sessions.mkdir(parents=True)
+            records = [
+                {"sessionId": "private-session", "startTime": "2026-08-13T00:00:00Z"},
+                {"id": "user-1", "type": "user", "timestamp": "2026-08-13T00:00:01Z", "content": "hello"},
+                {"id": "old", "type": "gemini", "timestamp": "2026-08-13T00:00:02Z", "model": "gemini-old", "content": "(._.) old"},
+                {"$rewindTo": "old"},
+                {"id": "new", "type": "gemini", "timestamp": "2026-08-13T00:00:03Z", "model": "gemini-new", "content": [{"text": "(^_^) new"}]},
+            ]
+            (sessions / "session-test.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records), encoding="utf-8",
+            )
+            result = list(gemini_observations(Path(directory), set()))
+            self.assertEqual([item["message_start"] for item in result], ["(^_^) new"])
+            self.assertEqual(result[0]["model"], "gemini-new")
+            self.assertNotIn("conversation_hash", result[0])
+            self.assertNotIn("private-session", json.dumps(result))
+
+    def test_gemini_unknown_rewind_fails_loudly(self):
+        with TemporaryDirectory() as directory:
+            session = Path(directory) / "session-test.jsonl"
+            session.write_text(
+                '\n'.join((json.dumps({"sessionId": "s"}), json.dumps({"$rewindTo": "missing"}))),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "unknown message"):
+                list(gemini_observations(Path(directory), set()))
+
+    def test_pi_reads_only_the_active_branch(self):
+        with TemporaryDirectory() as directory:
+            records = [
+                {"type": "session", "version": 3, "id": "private-session"},
+                {"type": "message", "id": "u1", "parentId": None, "timestamp": "2026-08-13T00:00:01Z", "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]}},
+                {"type": "message", "id": "abandoned", "parentId": "u1", "timestamp": "2026-08-13T00:00:02Z", "message": {"role": "assistant", "model": "pi-old", "content": [{"type": "text", "text": "(._.) old"}]}},
+                {"type": "message", "id": "current", "parentId": "u1", "timestamp": "2026-08-13T00:00:03Z", "message": {"role": "assistant", "model": "pi-new", "content": [{"type": "text", "text": "(^_^) new"}]}},
+            ]
+            (Path(directory) / "session.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records), encoding="utf-8",
+            )
+            result = list(pi_observations(Path(directory), set()))
+            self.assertEqual([item["message_start"] for item in result], ["(^_^) new"])
+            self.assertEqual(result[0]["model"], "pi-new")
+            self.assertNotIn("conversation_hash", result[0])
+            self.assertNotIn("private-session", json.dumps(result))
+
+    def test_pi_broken_branch_fails_loudly(self):
+        with TemporaryDirectory() as directory:
+            records = [
+                {"type": "session", "version": 3, "id": "s"},
+                {"type": "message", "id": "a", "parentId": "missing", "timestamp": "2026-08-13T00:00:00Z", "message": {"role": "assistant", "content": "(._.)"}},
+            ]
+            (Path(directory) / "session.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records), encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "broken message tree"):
+                list(pi_observations(Path(directory), set()))
 
     def test_key_round_trip_uses_private_permissions(self):
         with TemporaryDirectory() as directory:
@@ -398,6 +459,8 @@ class ClientTest(unittest.TestCase):
                 codex_sessions=sessions,
                 claude_projects=root / "missing-claude-projects",
                 hermes_state=root / "missing-hermes.db",
+                gemini_sessions=root / "missing-gemini",
+                pi_sessions=root / "missing-pi",
                 state=state,
                 credentials=root / "credentials.json",
                 key_stdin=True,
@@ -489,6 +552,8 @@ class ClientTest(unittest.TestCase):
                 codex_sessions=codex,
                 claude_projects=claude,
                 hermes_state=root / "missing-hermes.db",
+                gemini_sessions=root / "missing-gemini",
+                pi_sessions=root / "missing-pi",
                 state=state,
             )
             sent_ids, initialized = load_state(state)
@@ -591,6 +656,8 @@ class ClientTest(unittest.TestCase):
                 codex_sessions=sessions,
                 claude_projects=root / "missing-claude",
                 hermes_state=root / "missing-hermes.db",
+                gemini_sessions=root / "missing-gemini",
+                pi_sessions=root / "missing-pi",
                 state=state,
                 credentials=credentials,
                 import_state=root / "history-import.json",
@@ -650,6 +717,8 @@ class ClientTest(unittest.TestCase):
                 codex_sessions=sessions,
                 claude_projects=root / "missing-claude",
                 hermes_state=root / "missing-hermes.db",
+                gemini_sessions=root / "missing-gemini",
+                pi_sessions=root / "missing-pi",
                 state=state,
                 credentials=credentials,
                 import_state=root / "history-import.json",
@@ -685,6 +754,7 @@ class ClientTest(unittest.TestCase):
             args = SimpleNamespace(
                 codex_sessions=sessions, claude_projects=root / "missing-claude",
                 hermes_state=root / "missing-hermes.db",
+                gemini_sessions=root / "missing-gemini", pi_sessions=root / "missing-pi",
                 state=state, credentials=credentials,
                 import_state=root / "history-import.json",
                 lock=root / "client.lock", deadline=120,

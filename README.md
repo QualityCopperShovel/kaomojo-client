@@ -1,10 +1,20 @@
 # Kaomojo Client
 
-Codex and Claude Code session parsing is provided by the shared, local-only, MIT-licensed `coding-agent-sessions` package. Hermes sessions are read directly from its local SQLite database in read-only mode. Kaomojo retains its own API key, payload projection, checkpoints, and product identity.
+Codex and Claude Code session parsing is provided by the shared, local-only, MIT-licensed `coding-agent-sessions` package. Hermes, Gemini CLI, and Pi sessions are read locally from their native stores. Kaomojo retains its own API key, payload projection, checkpoints, and product identity.
 
-The default client for collecting kaomoji sightings from local Codex, Claude Code, and Hermes sessions and submitting them to [Kaomojo](https://kaomojo.com).
+The default client for collecting kaomoji sightings from supported local coding-agent sessions and submitting them to [Kaomojo](https://kaomojo.com).
 
 Hermes support was added August 13, 2026 and is preliminary. It is covered by automated tests against a real Hermes 0.19.0 session database, but has not yet been validated by a human Hermes user.
+
+Gemini CLI and Pi support was added August 13, 2026 and is preliminary. Both are covered by automated compatibility fixtures derived from their current authoritative session schemas, including rewound and branched conversations, but neither has yet been validated by a human user.
+
+| Environment | Collector status |
+| --- | --- |
+| Codex, Claude Code | Supported |
+| Hermes | Preliminary; real 0.19.0 database tested |
+| Gemini CLI, Pi | Preliminary; authoritative schema fixtures tested |
+| Goose, OpenCode | Evaluated; native SQLite support is not implemented yet |
+| Aider | Not supported; its Markdown history lacks reliable occurrence and model provenance |
 
 ## Install
 
@@ -44,7 +54,7 @@ pipx install --force --pip-args=--no-cache-dir git+https://github.com/QualityCop
 
 The forced no-cache install is necessary because `pipx upgrade` and `pipx reinstall` may reuse the original VCS build.
 
-Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory, every project in the user's Claude Code projects directory, and active assistant messages in the user's Hermes `~/.hermes/state.db`, not only the current project. Hermes is opened read-only with a five-second lock timeout. Only the first 30 and last 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, session IDs, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. By default it scans Codex, Claude Code, Gemini CLI, and Pi JSONL session stores plus active assistant messages in Hermes `~/.hermes/state.db`, not only the current project. Hermes is opened read-only with a five-second lock timeout. Only the first 30 and last 30 characters of assistant messages, model provenance when available, timestamps, and privacy-safe conversation hashes when available are submitted; prompts, full responses, session IDs, and transcript paths stay local.
 
 For compatibility debugging, each request also reports the Kaomojo client version, OS family and major version, CPU architecture, Python major/minor version, and harnesses represented in that request. It never sends a hostname, username, device identifier, path, location, or installed-package list. The server retains only the latest environment for each account.
 

@@ -36,6 +36,8 @@ DEFAULT_CLAUDE_PROJECTS = Path(
 DEFAULT_HERMES_STATE = Path(
     os.environ.get("HERMES_HOME", Path.home() / ".hermes")
 ) / "state.db"
+DEFAULT_GEMINI_SESSIONS = Path.home() / ".gemini" / "tmp"
+DEFAULT_PI_SESSIONS = Path.home() / ".pi" / "agent" / "sessions"
 HERMES_SQLITE_TIMEOUT_SECONDS = 5
 COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
@@ -298,7 +300,119 @@ def hermes_observations(state_db, sent_ids, context=None):
         }, context)
 
 
-def source_readers(codex_sessions, claude_projects, hermes_state, sent_ids, context=None):
+def visible_text(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    return "".join(
+        part["text"] for part in content
+        if isinstance(part, dict) and isinstance(part.get("text"), str)
+        and part.get("type", "text") in {"text", "output_text"}
+    ) or None
+
+
+def jsonl_records(path, source):
+    try:
+        with path.open(encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise RuntimeError(
+                        f"Cannot parse {source} session {path} line {line_number}: {error}"
+                    ) from error
+    except OSError as error:
+        raise RuntimeError(f"Cannot read {source} session {path}: {error}") from error
+
+
+def gemini_observations(session_root, sent_ids, context=None):
+    for path in sorted(session_root.rglob("session-*.jsonl")):
+        metadata = None
+        messages = []
+        for record in jsonl_records(path, "Gemini CLI"):
+            if not isinstance(record, dict):
+                continue
+            if metadata is None and isinstance(record.get("sessionId"), str):
+                metadata = record
+                continue
+            if isinstance(record.get("$rewindTo"), str):
+                target = record["$rewindTo"]
+                target_index = next(
+                    (index for index, item in enumerate(messages) if item.get("id") == target),
+                    None,
+                )
+                if target_index is None:
+                    raise RuntimeError(f"Gemini CLI session {path} rewinds to an unknown message")
+                messages = messages[:target_index]
+            elif isinstance(record.get("id"), str):
+                messages.append(record)
+        if not metadata:
+            raise RuntimeError(f"Gemini CLI session {path} has no metadata record")
+        session_id = metadata["sessionId"]
+        for record in messages:
+            if record.get("type") != "gemini":
+                continue
+            text = visible_text(record.get("content"))
+            if not text or not isinstance(record.get("timestamp"), str):
+                continue
+            local_event_id = stable_hash(f"gemini-message:{session_id}:{record['id']}")
+            if local_event_id in sent_ids:
+                continue
+            yield build_observation({
+                "local_event_id": local_event_id,
+                "text": text,
+                "harness": "gemini_cli",
+                "model": record.get("model") if isinstance(record.get("model"), str) else None,
+                "timestamp": record["timestamp"],
+            }, context)
+
+
+def pi_observations(session_root, sent_ids, context=None):
+    for path in sorted(session_root.rglob("*.jsonl")):
+        records = list(jsonl_records(path, "Pi"))
+        if not records or not isinstance(records[0], dict) or records[0].get("type") != "session":
+            raise RuntimeError(f"Pi session {path} has no valid session header")
+        session_id = records[0].get("id")
+        if not isinstance(session_id, str):
+            raise RuntimeError(f"Pi session {path} has no session ID")
+        entries = {
+            record["id"]: record for record in records[1:]
+            if isinstance(record, dict) and isinstance(record.get("id"), str)
+        }
+        leaf = next(reversed(entries), None)
+        active_ids = set()
+        while leaf is not None:
+            if leaf in active_ids or leaf not in entries:
+                raise RuntimeError(f"Pi session {path} has a broken message tree")
+            active_ids.add(leaf)
+            leaf = entries[leaf].get("parentId")
+        for record in records[1:]:
+            if not isinstance(record, dict) or record.get("id") not in active_ids:
+                continue
+            message = record.get("message")
+            if record.get("type") != "message" or not isinstance(message, dict):
+                continue
+            if message.get("role") != "assistant":
+                continue
+            text = visible_text(message.get("content"))
+            if not text or not isinstance(record.get("timestamp"), str):
+                continue
+            local_event_id = stable_hash(f"pi-message:{session_id}:{record['id']}")
+            if local_event_id in sent_ids:
+                continue
+            yield build_observation({
+                "local_event_id": local_event_id,
+                "text": text,
+                "harness": "pi",
+                "model": message.get("model") if isinstance(message.get("model"), str) else None,
+                "timestamp": record["timestamp"],
+            }, context)
+
+
+def source_readers(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None):
     readers = {}
     if codex_sessions.is_dir():
         readers["codex"] = observations(codex_sessions, sent_ids, context)
@@ -308,18 +422,23 @@ def source_readers(codex_sessions, claude_projects, hermes_state, sent_ids, cont
         )
     if hermes_state.is_file():
         readers["hermes"] = hermes_observations(hermes_state, sent_ids, context)
+    if gemini_sessions.is_dir():
+        readers["gemini_cli"] = gemini_observations(gemini_sessions, sent_ids, context)
+    if pi_sessions.is_dir():
+        readers["pi"] = pi_observations(pi_sessions, sent_ids, context)
     if not readers:
         raise RuntimeError(
             "No supported sessions found: "
             f"Codex at {codex_sessions}, Claude Code at {claude_projects}, "
-            f"or Hermes at {hermes_state}"
+            f"Hermes at {hermes_state}, Gemini CLI at {gemini_sessions}, "
+            f"or Pi at {pi_sessions}"
         )
     return readers
 
 
-def all_observations(codex_sessions, claude_projects, hermes_state, sent_ids, context=None):
+def all_observations(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None):
     for reader in source_readers(
-        codex_sessions, claude_projects, hermes_state, sent_ids, context,
+        codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context,
     ).values():
         yield from reader
 
@@ -382,7 +501,8 @@ def save_state(path, sent_ids, initialized_sources):
 
 def baseline_new_sources(args, sent_ids, initialized_sources):
     readers = source_readers(
-        args.codex_sessions, args.claude_projects, args.hermes_state, set(),
+        args.codex_sessions, args.claude_projects, args.hermes_state,
+        args.gemini_sessions, args.pi_sessions, set(),
     )
     added = {}
     for source, reader in readers.items():
@@ -576,7 +696,8 @@ def collect_locked(args):
     for source, count in newly_initialized.items():
         print(f"Initialized {source}: {count} existing observations marked as seen")
     pending = list(all_observations(
-        args.codex_sessions, args.claude_projects, args.hermes_state, sent_ids, args.context,
+        args.codex_sessions, args.claude_projects, args.hermes_state,
+        args.gemini_sessions, args.pi_sessions, sent_ids, args.context,
     ))
     filtered = [item for item in pending if not may_contain_kaomoji(item)]
     pending = [item for item in pending if may_contain_kaomoji(item)]
@@ -660,7 +781,8 @@ def import_history_locked(args):
     state = load_import_state(args.import_state)
     processed_ids = set(state["processed_ids"])
     pending = list(all_observations(
-        args.codex_sessions, args.claude_projects, args.hermes_state, processed_ids,
+        args.codex_sessions, args.claude_projects, args.hermes_state,
+        args.gemini_sessions, args.pi_sessions, processed_ids,
     ))
     pending.sort(key=lambda item: item["observed_at"], reverse=True)
     filtered = [item for item in pending if not may_contain_kaomoji(item)]
@@ -871,6 +993,8 @@ def parser():
     setup_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     setup_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     setup_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
+    setup_parser.add_argument("--gemini-sessions", type=Path, default=DEFAULT_GEMINI_SESSIONS)
+    setup_parser.add_argument("--pi-sessions", type=Path, default=DEFAULT_PI_SESSIONS)
     setup_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     setup_parser.add_argument(
         "--no-schedule",
@@ -883,11 +1007,13 @@ def parser():
     )
     schedule_parser.set_defaults(handler=configure_schedule)
     collect_parser = commands.add_parser(
-        "collect", help="Collect new sightings from Codex, Claude Code, and Hermes sessions",
+        "collect", help="Collect new sightings from Codex, Claude Code, Hermes, Gemini CLI, and Pi sessions",
     )
     collect_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     collect_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     collect_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
+    collect_parser.add_argument("--gemini-sessions", type=Path, default=DEFAULT_GEMINI_SESSIONS)
+    collect_parser.add_argument("--pi-sessions", type=Path, default=DEFAULT_PI_SESSIONS)
     collect_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     collect_parser.add_argument("--lock", type=Path, default=DEFAULT_STATE / "client.lock")
     collect_parser.add_argument("--context", help="Optional de-identified context, at most 200 characters")
@@ -899,6 +1025,8 @@ def parser():
     import_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     import_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
     import_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
+    import_parser.add_argument("--gemini-sessions", type=Path, default=DEFAULT_GEMINI_SESSIONS)
+    import_parser.add_argument("--pi-sessions", type=Path, default=DEFAULT_PI_SESSIONS)
     import_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     import_parser.add_argument(
         "--import-state", type=Path, default=DEFAULT_STATE / "history-import.json",
