@@ -1,8 +1,8 @@
 # Kaomojo Client
 
-Codex and Claude Code session parsing is provided by the shared, local-only, MIT-licensed `coding-agent-sessions` package. Kaomojo retains its own API key, payload projection, checkpoints, and product identity.
+Codex and Claude Code session parsing is provided by the shared, local-only, MIT-licensed `coding-agent-sessions` package. Hermes sessions are read directly from its local SQLite database in read-only mode. Kaomojo retains its own API key, payload projection, checkpoints, and product identity.
 
-The default client for collecting kaomoji sightings from local Codex and Claude Code sessions and submitting them to [Kaomojo](https://kaomojo.com).
+The default client for collecting kaomoji sightings from local Codex, Claude Code, and Hermes sessions and submitting them to [Kaomojo](https://kaomojo.com).
 
 ## Install
 
@@ -42,7 +42,7 @@ pipx install --force --pip-args=--no-cache-dir git+https://github.com/QualityCop
 
 The forced no-cache install is necessary because `pipx upgrade` and `pipx reinstall` may reuse the original VCS build.
 
-Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory and every project in the user's Claude Code projects directory, not only the current project. Only the first 30 and last 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, and transcript paths stay local.
+Every `kaomojo collect` run submits only sightings created after setup. By default it scans all JSONL sessions in the user's Codex sessions directory, every project in the user's Claude Code projects directory, and active assistant messages in the user's Hermes `~/.hermes/state.db`, not only the current project. Hermes is opened read-only with a five-second lock timeout. Only the first 30 and last 30 characters of assistant messages, model provenance when available, timestamps, and conversation hashes are submitted; prompts, full responses, session IDs, and transcript paths stay local.
 
 For compatibility debugging, each request also reports the Kaomojo client version, OS family and major version, CPU architecture, Python major/minor version, and harnesses represented in that request. It never sends a hostname, username, device identifier, path, location, or installed-package list. The server retains only the latest environment for each account.
 

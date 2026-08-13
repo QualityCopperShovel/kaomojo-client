@@ -1,4 +1,4 @@
-"""Command-line client for collecting Kaomojo sightings from Codex sessions."""
+"""Collect Kaomojo sightings from supported local coding-agent sessions."""
 
 from pathlib import Path
 import argparse
@@ -7,12 +7,14 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import getpass
+import hashlib
 import json
 import os
 import platform
 import plistlib
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -31,6 +33,10 @@ DEFAULT_SESSIONS = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / 
 DEFAULT_CLAUDE_PROJECTS = Path(
     os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
 ) / "projects"
+DEFAULT_HERMES_STATE = Path(
+    os.environ.get("HERMES_HOME", Path.home() / ".hermes")
+) / "state.db"
+HERMES_SQLITE_TIMEOUT_SECONDS = 5
 COLLECTION_INTERVAL_SECONDS = 300
 SCHEDULER_TIMEOUT_SECONDS = 15
 WINDOWS_TASK_NAME = "Kaomojo Collect"
@@ -214,7 +220,85 @@ def claude_observations(projects_dir, sent_ids, context=None):
             yield build_observation(event, context)
 
 
-def source_readers(codex_sessions, claude_projects, sent_ids, context=None):
+def stable_hash(value):
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def hermes_message_text(content):
+    """Return only user-visible text from Hermes scalar or structured content."""
+    if not isinstance(content, str):
+        return None
+    if not content.startswith("\x00json:"):
+        return content
+    try:
+        parts = json.loads(content[len("\x00json:"):])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parts, list):
+        return None
+    text = []
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") in {"text", "output_text"}:
+            value = part.get("text")
+            if isinstance(value, str):
+                text.append(value)
+    return "".join(text) or None
+
+
+def hermes_observations(state_db, sent_ids, context=None):
+    """Read active assistant messages from a live Hermes state DB, read-only."""
+    try:
+        connection = sqlite3.connect(
+            state_db.resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=HERMES_SQLITE_TIMEOUT_SECONDS,
+        )
+    except sqlite3.Error as error:
+        raise RuntimeError(f"Cannot open Hermes session database at {state_db}: {error}") from error
+    try:
+        connection.execute(f"PRAGMA busy_timeout={HERMES_SQLITE_TIMEOUT_SECONDS * 1000}")
+        connection.execute("PRAGMA query_only=ON")
+        required = {
+            "messages": {"id", "session_id", "role", "content", "timestamp", "active"},
+            "sessions": {"id", "model"},
+        }
+        for table, columns in required.items():
+            actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if not columns.issubset(actual):
+                raise RuntimeError(
+                    f"Hermes database at {state_db} has an unsupported {table} schema"
+                )
+        rows = connection.execute(
+            """SELECT m.id, m.session_id, m.content, m.timestamp, s.model
+               FROM messages AS m
+               JOIN sessions AS s ON s.id = m.session_id
+               WHERE m.role = 'assistant' AND m.active = 1
+               ORDER BY m.id"""
+        ).fetchall()
+    except sqlite3.Error as error:
+        raise RuntimeError(f"Cannot read Hermes sessions at {state_db}: {error}") from error
+    finally:
+        connection.close()
+    for message_id, session_id, content, timestamp, model in rows:
+        local_event_id = stable_hash(f"hermes-message:{session_id}:{message_id}")
+        if local_event_id in sent_ids:
+            continue
+        text = hermes_message_text(content)
+        if not text:
+            continue
+        yield build_observation({
+            "local_event_id": local_event_id,
+            "text": text,
+            "harness": "hermes",
+            "model": model if isinstance(model, str) else None,
+            "timestamp": datetime.fromtimestamp(
+                float(timestamp), timezone.utc,
+            ).isoformat().replace("+00:00", "Z"),
+            "conversation_hash": stable_hash(f"hermes-session:{session_id}"),
+        }, context)
+
+
+def source_readers(codex_sessions, claude_projects, hermes_state, sent_ids, context=None):
     readers = {}
     if codex_sessions.is_dir():
         readers["codex"] = observations(codex_sessions, sent_ids, context)
@@ -222,16 +306,20 @@ def source_readers(codex_sessions, claude_projects, sent_ids, context=None):
         readers["claude_code"] = claude_observations(
             claude_projects, sent_ids, context,
         )
+    if hermes_state.is_file():
+        readers["hermes"] = hermes_observations(hermes_state, sent_ids, context)
     if not readers:
         raise RuntimeError(
-            f"No Codex sessions at {codex_sessions} or Claude Code projects at {claude_projects}"
+            "No supported sessions found: "
+            f"Codex at {codex_sessions}, Claude Code at {claude_projects}, "
+            f"or Hermes at {hermes_state}"
         )
     return readers
 
 
-def all_observations(codex_sessions, claude_projects, sent_ids, context=None):
+def all_observations(codex_sessions, claude_projects, hermes_state, sent_ids, context=None):
     for reader in source_readers(
-        codex_sessions, claude_projects, sent_ids, context,
+        codex_sessions, claude_projects, hermes_state, sent_ids, context,
     ).values():
         yield from reader
 
@@ -294,7 +382,7 @@ def save_state(path, sent_ids, initialized_sources):
 
 def baseline_new_sources(args, sent_ids, initialized_sources):
     readers = source_readers(
-        args.codex_sessions, args.claude_projects, set(),
+        args.codex_sessions, args.claude_projects, args.hermes_state, set(),
     )
     added = {}
     for source, reader in readers.items():
@@ -488,7 +576,7 @@ def collect_locked(args):
     for source, count in newly_initialized.items():
         print(f"Initialized {source}: {count} existing observations marked as seen")
     pending = list(all_observations(
-        args.codex_sessions, args.claude_projects, sent_ids, args.context,
+        args.codex_sessions, args.claude_projects, args.hermes_state, sent_ids, args.context,
     ))
     filtered = [item for item in pending if not may_contain_kaomoji(item)]
     pending = [item for item in pending if may_contain_kaomoji(item)]
@@ -572,7 +660,7 @@ def import_history_locked(args):
     state = load_import_state(args.import_state)
     processed_ids = set(state["processed_ids"])
     pending = list(all_observations(
-        args.codex_sessions, args.claude_projects, processed_ids,
+        args.codex_sessions, args.claude_projects, args.hermes_state, processed_ids,
     ))
     pending.sort(key=lambda item: item["observed_at"], reverse=True)
     filtered = [item for item in pending if not may_contain_kaomoji(item)]
@@ -782,6 +870,7 @@ def parser():
     setup_parser.add_argument("--key-stdin", action="store_true", help=argparse.SUPPRESS)
     setup_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     setup_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    setup_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
     setup_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     setup_parser.add_argument(
         "--no-schedule",
@@ -794,10 +883,11 @@ def parser():
     )
     schedule_parser.set_defaults(handler=configure_schedule)
     collect_parser = commands.add_parser(
-        "collect", help="Collect new sightings from Codex and Claude Code sessions",
+        "collect", help="Collect new sightings from Codex, Claude Code, and Hermes sessions",
     )
     collect_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     collect_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    collect_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
     collect_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     collect_parser.add_argument("--lock", type=Path, default=DEFAULT_STATE / "client.lock")
     collect_parser.add_argument("--context", help="Optional de-identified context, at most 200 characters")
@@ -808,6 +898,7 @@ def parser():
     )
     import_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
     import_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    import_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
     import_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     import_parser.add_argument(
         "--import-state", type=Path, default=DEFAULT_STATE / "history-import.json",

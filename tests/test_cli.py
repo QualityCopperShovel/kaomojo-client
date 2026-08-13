@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import json
 import os
 import stat
+import sqlite3
 import sys
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ import requests
 
 from kaomojo_client.cli import (
     claude_observations,
+    hermes_observations,
     baseline_new_sources,
     configure_launchd_schedule,
     configure_systemd_schedule,
@@ -57,12 +59,12 @@ class ClientTest(unittest.TestCase):
             response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
-                    "version": "4.14.0",
+                    "version": "4.15.0",
                     "repository": "https://github.com/QualityCopperShovel/kaomojo-client.git",
                     "commit": "a" * 40,
                 },
             )
-            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.14.0\n")]
+            completed = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="kaomojo 4.15.0\n")]
             with patch("kaomojo_client.cli.requests.get", return_value=response) as request, patch(
                 "kaomojo_client.cli.shutil.which", side_effect=["/usr/bin/pipx", "/bin/kaomojo"]
             ), patch("kaomojo_client.cli.subprocess.run", side_effect=completed) as run:
@@ -168,7 +170,7 @@ class ClientTest(unittest.TestCase):
 
     def test_help_names_both_supported_agents(self):
         help_text = parser().format_help()
-        self.assertIn("Codex and Claude Code sessions", " ".join(help_text.split()))
+        self.assertIn("Codex, Claude Code, and Hermes sessions", " ".join(help_text.split()))
 
     def test_key_round_trip_uses_private_permissions(self):
         with TemporaryDirectory() as directory:
@@ -284,6 +286,92 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(result[0]["model"], "claude-opus-test")
             self.assertTrue(result[0]["conversation_hash"].startswith("sha256:"))
 
+    def test_hermes_observations_read_real_state_schema_without_identity_leaks(self):
+        with TemporaryDirectory() as directory:
+            state_db = Path(directory) / "state.db"
+            connection = sqlite3.connect(state_db)
+            connection.executescript("""
+                CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT);
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    timestamp REAL NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO sessions VALUES ('private-session-name', 'hermes-test-model');
+                INSERT INTO messages (session_id, role, content, timestamp, active)
+                    VALUES ('private-session-name', 'user', 'private prompt', 1786579200, 1);
+                INSERT INTO messages (session_id, role, content, timestamp, active)
+                    VALUES ('private-session-name', 'assistant', '(•‿•) Hermes works', 1786579201, 1);
+                INSERT INTO messages (session_id, role, content, timestamp, active)
+                    VALUES ('private-session-name', 'assistant', '(._.) rewound', 1786579202, 0);
+            """)
+            connection.close()
+            result = list(hermes_observations(state_db, set()))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["message_start"], "(•‿•) Hermes works")
+        self.assertEqual(result[0]["harness"], "hermes")
+        self.assertEqual(result[0]["model"], "hermes-test-model")
+        self.assertEqual(result[0]["observed_at"], "2026-08-13T00:00:01Z")
+        self.assertTrue(result[0]["idempotency_key"].startswith("sha256:"))
+        self.assertNotIn("private-session-name", json.dumps(result[0]))
+
+    def test_hermes_structured_text_is_supported_and_malformed_schema_fails(self):
+        with TemporaryDirectory() as directory:
+            state_db = Path(directory) / "state.db"
+            connection = sqlite3.connect(state_db)
+            connection.executescript("""
+                CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT);
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+                    content TEXT, timestamp REAL, active INTEGER
+                );
+                INSERT INTO sessions VALUES ('s', NULL);
+            """)
+            structured = "\x00json:" + json.dumps([
+                {"type": "text", "text": "(＾▽＾) "},
+                {"type": "image_url", "image_url": "private"},
+                {"type": "output_text", "text": "Done"},
+            ])
+            connection.execute(
+                "INSERT INTO messages VALUES (1, 's', 'assistant', ?, 1786579201, 1)",
+                (structured,),
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(
+                list(hermes_observations(state_db, set()))[0]["message_start"],
+                "(＾▽＾) Done",
+            )
+
+            bad_db = Path(directory) / "bad.db"
+            connection = sqlite3.connect(bad_db)
+            connection.execute("CREATE TABLE sessions (id TEXT)")
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(RuntimeError, "unsupported .* schema"):
+                list(hermes_observations(bad_db, set()))
+
+    def test_locked_hermes_database_terminates_with_concrete_error(self):
+        with TemporaryDirectory() as directory:
+            state_db = Path(directory) / "state.db"
+            connection = sqlite3.connect(state_db)
+            connection.executescript("""
+                CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT);
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+                    content TEXT, timestamp REAL, active INTEGER
+                );
+            """)
+            connection.execute("BEGIN EXCLUSIVE")
+            with patch("kaomojo_client.cli.HERMES_SQLITE_TIMEOUT_SECONDS", 0.01):
+                with self.assertRaisesRegex(RuntimeError, "Cannot read Hermes sessions.*locked"):
+                    list(hermes_observations(state_db, set()))
+            connection.rollback()
+            connection.close()
+
     def test_invalid_key_is_rejected(self):
         with TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "does not look"):
@@ -308,6 +396,7 @@ class ClientTest(unittest.TestCase):
             args = SimpleNamespace(
                 codex_sessions=sessions,
                 claude_projects=root / "missing-claude-projects",
+                hermes_state=root / "missing-hermes.db",
                 state=state,
                 credentials=root / "credentials.json",
                 key_stdin=True,
@@ -398,6 +487,7 @@ class ClientTest(unittest.TestCase):
             args = SimpleNamespace(
                 codex_sessions=codex,
                 claude_projects=claude,
+                hermes_state=root / "missing-hermes.db",
                 state=state,
             )
             sent_ids, initialized = load_state(state)
@@ -499,6 +589,7 @@ class ClientTest(unittest.TestCase):
             args = SimpleNamespace(
                 codex_sessions=sessions,
                 claude_projects=root / "missing-claude",
+                hermes_state=root / "missing-hermes.db",
                 state=state,
                 credentials=credentials,
                 import_state=root / "history-import.json",
@@ -557,6 +648,7 @@ class ClientTest(unittest.TestCase):
             args = SimpleNamespace(
                 codex_sessions=sessions,
                 claude_projects=root / "missing-claude",
+                hermes_state=root / "missing-hermes.db",
                 state=state,
                 credentials=credentials,
                 import_state=root / "history-import.json",
@@ -591,6 +683,7 @@ class ClientTest(unittest.TestCase):
             }), encoding="utf-8")
             args = SimpleNamespace(
                 codex_sessions=sessions, claude_projects=root / "missing-claude",
+                hermes_state=root / "missing-hermes.db",
                 state=state, credentials=credentials,
                 import_state=root / "history-import.json",
                 lock=root / "client.lock", deadline=120,
