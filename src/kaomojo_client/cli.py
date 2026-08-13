@@ -197,8 +197,9 @@ def build_observation(event, context=None):
         "message_start": start,
         "harness": event["harness"],
         "observed_at": event["timestamp"],
-        "conversation_hash": event["conversation_hash"],
     }
+    if event.get("conversation_hash"):
+        item["conversation_hash"] = event["conversation_hash"]
     if end:
         item["message_end"] = end
     if event["model"]:
@@ -294,7 +295,6 @@ def hermes_observations(state_db, sent_ids, context=None):
             "timestamp": datetime.fromtimestamp(
                 float(timestamp), timezone.utc,
             ).isoformat().replace("+00:00", "Z"),
-            "conversation_hash": stable_hash(f"hermes-session:{session_id}"),
         }, context)
 
 

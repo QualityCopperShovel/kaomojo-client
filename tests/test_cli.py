@@ -316,6 +316,7 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(result[0]["model"], "hermes-test-model")
         self.assertEqual(result[0]["observed_at"], "2026-08-13T00:00:01Z")
         self.assertTrue(result[0]["idempotency_key"].startswith("sha256:"))
+        self.assertNotIn("conversation_hash", result[0])
         self.assertNotIn("private-session-name", json.dumps(result[0]))
 
     def test_hermes_structured_text_is_supported_and_malformed_schema_fails(self):
