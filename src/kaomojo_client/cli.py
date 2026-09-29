@@ -211,14 +211,14 @@ def build_observation(event, context=None):
     return item
 
 
-def observations(session_dir, sent_ids, context=None):
-    for event in codex_assistant_events(session_dir):
+def observations(session_dir, sent_ids, context=None, skip=None):
+    for event in codex_assistant_events(session_dir, skip):
         if event["local_event_id"] not in sent_ids:
             yield build_observation(event, context)
 
 
-def claude_observations(projects_dir, sent_ids, context=None):
-    for event in claude_assistant_events(projects_dir):
+def claude_observations(projects_dir, sent_ids, context=None, skip=None):
+    for event in claude_assistant_events(projects_dir, skip):
         if event["local_event_id"] not in sent_ids:
             yield build_observation(event, context)
 
@@ -412,13 +412,13 @@ def pi_observations(session_root, sent_ids, context=None):
             }, context)
 
 
-def source_readers(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None):
+def source_readers(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None, skip=None):
     readers = {}
     if codex_sessions.is_dir():
-        readers["codex"] = observations(codex_sessions, sent_ids, context)
+        readers["codex"] = observations(codex_sessions, sent_ids, context, skip)
     if claude_projects.is_dir():
         readers["claude_code"] = claude_observations(
-            claude_projects, sent_ids, context,
+            claude_projects, sent_ids, context, skip,
         )
     if hermes_state.is_file():
         readers["hermes"] = hermes_observations(hermes_state, sent_ids, context)
@@ -436,9 +436,9 @@ def source_readers(codex_sessions, claude_projects, hermes_state, gemini_session
     return readers
 
 
-def all_observations(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None):
+def all_observations(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None, skip=None):
     for reader in source_readers(
-        codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context,
+        codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context, skip,
     ).values():
         yield from reader
 
@@ -497,6 +497,34 @@ def save_state(path, sent_ids, initialized_sources):
         "sent_ids": sorted(sent_ids),
         "initialized_sources": sorted(initialized_sources),
     })
+
+
+def file_signatures_path(state_path):
+    return state_path.with_name(f"{state_path.stem}-files.json")
+
+
+def load_file_signatures(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid file signature cache: {path}")
+    return value
+
+
+def unchanged_since(previous, current):
+    """Skip hook recording each transcript's size and mtime into ``current``.
+
+    A file is passed over when both match the last complete collection, so a
+    run re-reads only transcripts that changed rather than the whole history.
+    """
+    def skip(path):
+        stat = path.stat()
+        signature = [stat.st_size, stat.st_mtime_ns]
+        current[str(path)] = signature
+        return previous.get(str(path)) == signature
+    return skip
 
 
 def baseline_new_sources(args, sent_ids, initialized_sources):
@@ -695,9 +723,12 @@ def collect_locked(args):
     newly_initialized = baseline_new_sources(args, sent_ids, initialized_sources)
     for source, count in newly_initialized.items():
         print(f"Initialized {source}: {count} existing observations marked as seen")
+    signatures_path = file_signatures_path(args.state)
+    scanned = {}
     pending = list(all_observations(
         args.codex_sessions, args.claude_projects, args.hermes_state,
         args.gemini_sessions, args.pi_sessions, sent_ids, args.context,
+        unchanged_since(load_file_signatures(signatures_path), scanned),
     ))
     filtered = [item for item in pending if not may_contain_kaomoji(item)]
     pending = [item for item in pending if may_contain_kaomoji(item)]
@@ -717,6 +748,7 @@ def collect_locked(args):
             record_warnings(warnings, result)
             sent_ids.update(item["idempotency_key"] for item in batch)
             save_state(args.state, sent_ids, initialized_sources)
+    atomic_private_json(signatures_path, scanned)
     print(
         f"Complete: {accepted} accepted, {rejected} rejected, "
         f"{len(filtered)} plain-text prefixes skipped locally"
