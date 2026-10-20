@@ -47,8 +47,10 @@ MAX_BATCH_ITEMS = 20
 TARGET_BATCH_BYTES = 24 * 1024
 MIN_REQUEST_SECONDS = 5
 # One scheduled collection must finish inside the installed TimeoutStartSec=150;
-# a larger backlog drains over later runs.
+# a larger backlog drains over later runs. A batch starts only with a full
+# submission window left, since the server's extraction takes tens of seconds.
 COLLECT_DEADLINE_SECONDS = 120
+BATCH_WINDOW_SECONDS = 60
 # Kaomojo accepts at most this many characters per excerpt, and two excerpts
 # per observation: the opening one and the non-overlapping closing one.
 EXCERPT_LIMIT = 30
@@ -728,6 +730,8 @@ def collect_locked(args):
     started = time.monotonic()
     if args.context and len(args.context) > 200:
         raise ValueError("--context must be at most 200 characters")
+    if args.deadline < BATCH_WINDOW_SECONDS:
+        raise ValueError(f"--deadline must be at least {BATCH_WINDOW_SECONDS} seconds")
     if not args.state.exists():
         raise RuntimeError("Run `kaomojo setup` first")
     maybe_auto_update(args.state.parent / "update.json")
@@ -755,8 +759,8 @@ def collect_locked(args):
     deferred = 0
     with requests.Session() as session:
         for index, batch in enumerate(batches):
-            remaining = COLLECT_DEADLINE_SECONDS - (time.monotonic() - started)
-            if remaining < MIN_REQUEST_SECONDS * 2:
+            remaining = args.deadline - (time.monotonic() - started)
+            if remaining < BATCH_WINDOW_SECONDS:
                 deferred = sum(len(later) for later in batches[index:])
                 break
             result = post_resilient_batch(session, api_key, batch, min(120, remaining))
@@ -1073,6 +1077,10 @@ def parser():
     collect_parser.add_argument("--state", type=Path, default=DEFAULT_STATE / "codex-state.json")
     collect_parser.add_argument("--lock", type=Path, default=DEFAULT_STATE / "client.lock")
     collect_parser.add_argument("--context", help="Optional de-identified context, at most 200 characters")
+    collect_parser.add_argument(
+        "--deadline", type=float, default=COLLECT_DEADLINE_SECONDS,
+        help="Seconds one collection may run before leaving the rest for the next run",
+    )
     collect_parser.set_defaults(handler=collect)
     import_parser = commands.add_parser(
         "import-history",
