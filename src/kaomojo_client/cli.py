@@ -46,6 +46,9 @@ DEFAULT_IMPORT_DEADLINE_SECONDS = 3600
 MAX_BATCH_ITEMS = 20
 TARGET_BATCH_BYTES = 24 * 1024
 MIN_REQUEST_SECONDS = 5
+# One scheduled collection must finish inside the installed TimeoutStartSec=150;
+# a larger backlog drains over later runs.
+COLLECT_DEADLINE_SECONDS = 120
 # Kaomojo accepts at most this many characters per excerpt, and two excerpts
 # per observation: the opening one and the non-overlapping closing one.
 EXCERPT_LIMIT = 30
@@ -722,6 +725,7 @@ def collect(args):
 
 
 def collect_locked(args):
+    started = time.monotonic()
     if args.context and len(args.context) > 200:
         raise ValueError("--context must be at most 200 characters")
     if not args.state.exists():
@@ -747,20 +751,32 @@ def collect_locked(args):
     accepted = rejected = 0
     rejection_reasons = Counter()
     warnings = Counter()
+    batches = list(observation_batches(pending))
+    deferred = 0
     with requests.Session() as session:
-        for batch in observation_batches(pending):
-            result = post_resilient_batch(session, api_key, batch)
+        for index, batch in enumerate(batches):
+            remaining = COLLECT_DEADLINE_SECONDS - (time.monotonic() - started)
+            if remaining < MIN_REQUEST_SECONDS * 2:
+                deferred = sum(len(later) for later in batches[index:])
+                break
+            result = post_resilient_batch(session, api_key, batch, min(120, remaining))
             accepted += result["accepted"]
             rejected += result["rejected"]
             record_rejections(rejection_reasons, result)
             record_warnings(warnings, result)
             sent_ids.update(item["idempotency_key"] for item in batch)
             save_state(args.state, sent_ids, initialized_sources)
-    atomic_private_json(signatures_path, scanned)
-    print(
-        f"Complete: {accepted} accepted, {rejected} rejected, "
-        f"{len(filtered)} plain-text prefixes skipped locally"
-    )
+    if deferred:
+        print(
+            f"Partial: {accepted} accepted, {rejected} rejected, "
+            f"{deferred} observations left for the next collection"
+        )
+    else:
+        atomic_private_json(signatures_path, scanned)
+        print(
+            f"Complete: {accepted} accepted, {rejected} rejected, "
+            f"{len(filtered)} plain-text prefixes skipped locally"
+        )
     print_rejections(rejection_reasons)
     print_warnings(warnings)
 
