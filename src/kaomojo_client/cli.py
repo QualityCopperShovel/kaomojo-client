@@ -412,13 +412,21 @@ def pi_observations(session_root, sent_ids, context=None):
             }, context)
 
 
+def existing_dirs(paths):
+    """The directories among ``paths``; one path or several may be given."""
+    return [path for path in ([paths] if isinstance(paths, Path) else paths) if path.is_dir()]
+
+
 def source_readers(codex_sessions, claude_projects, hermes_state, gemini_sessions, pi_sessions, sent_ids, context=None, skip=None):
     readers = {}
-    if codex_sessions.is_dir():
-        readers["codex"] = observations(codex_sessions, sent_ids, context, skip)
-    if claude_projects.is_dir():
-        readers["claude_code"] = claude_observations(
-            claude_projects, sent_ids, context, skip,
+    if codex_dirs := existing_dirs(codex_sessions):
+        readers["codex"] = (
+            item for path in codex_dirs for item in observations(path, sent_ids, context, skip)
+        )
+    if claude_dirs := existing_dirs(claude_projects):
+        readers["claude_code"] = (
+            item for path in claude_dirs
+            for item in claude_observations(path, sent_ids, context, skip)
         )
     if hermes_state.is_file():
         readers["hermes"] = hermes_observations(hermes_state, sent_ids, context)
@@ -1022,8 +1030,8 @@ def parser():
     commands = root.add_subparsers(dest="command", required=True)
     setup_parser = commands.add_parser("setup", help="Save your API key with user-only permissions")
     setup_parser.add_argument("--key-stdin", action="store_true", help=argparse.SUPPRESS)
-    setup_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
-    setup_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    setup_parser.add_argument("--codex-sessions", type=Path, nargs="+", default=[DEFAULT_SESSIONS])
+    setup_parser.add_argument("--claude-projects", type=Path, nargs="+", default=[DEFAULT_CLAUDE_PROJECTS])
     setup_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
     setup_parser.add_argument("--gemini-sessions", type=Path, default=DEFAULT_GEMINI_SESSIONS)
     setup_parser.add_argument("--pi-sessions", type=Path, default=DEFAULT_PI_SESSIONS)
@@ -1041,8 +1049,8 @@ def parser():
     collect_parser = commands.add_parser(
         "collect", help="Collect new sightings from Codex, Claude Code, Hermes, Gemini CLI, and Pi sessions",
     )
-    collect_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
-    collect_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    collect_parser.add_argument("--codex-sessions", type=Path, nargs="+", default=[DEFAULT_SESSIONS])
+    collect_parser.add_argument("--claude-projects", type=Path, nargs="+", default=[DEFAULT_CLAUDE_PROJECTS])
     collect_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
     collect_parser.add_argument("--gemini-sessions", type=Path, default=DEFAULT_GEMINI_SESSIONS)
     collect_parser.add_argument("--pi-sessions", type=Path, default=DEFAULT_PI_SESSIONS)
@@ -1054,8 +1062,8 @@ def parser():
         "import-history",
         help="Import sightings from conversations that existed before setup",
     )
-    import_parser.add_argument("--codex-sessions", type=Path, default=DEFAULT_SESSIONS)
-    import_parser.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+    import_parser.add_argument("--codex-sessions", type=Path, nargs="+", default=[DEFAULT_SESSIONS])
+    import_parser.add_argument("--claude-projects", type=Path, nargs="+", default=[DEFAULT_CLAUDE_PROJECTS])
     import_parser.add_argument("--hermes-state", type=Path, default=DEFAULT_HERMES_STATE)
     import_parser.add_argument("--gemini-sessions", type=Path, default=DEFAULT_GEMINI_SESSIONS)
     import_parser.add_argument("--pi-sessions", type=Path, default=DEFAULT_PI_SESSIONS)
